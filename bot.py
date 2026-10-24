@@ -3311,9 +3311,9 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_golos_code(update, context, text)
         return
 
-    if user_action == 'launch_channel':
+    if user_action.startswith('launch_'):
         del waiting_users[user_id]
-        await launch.handle_channel_input(update, context, text)
+        await launch.handle_input(update, context, user_action, text)
         return
 
     # Лимита по длине больше нет (Telegram сам не пропустит больше 4096 символов)
@@ -3661,9 +3661,10 @@ async def unsupported_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     user_id = update.effective_user.id
 
-    if update.message and waiting_users.get(user_id) == 'launch_channel':
+    _launch_act = waiting_users.get(user_id)
+    if update.message and isinstance(_launch_act, str) and _launch_act.startswith('launch_'):
         del waiting_users[user_id]
-        await launch.handle_channel_input(update, context, "")
+        await launch.handle_input(update, context, _launch_act, "")
         return
 
     if (update.message and update.effective_chat.type == "private" and _media_kind(update.message)
