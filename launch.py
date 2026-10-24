@@ -1,6 +1,6 @@
 """Конструктор постов для канала: /launch.
 
-Как пользоваться (админу, в личке с ботом):
+Как пользоваться (любому пользователю, в личке с ботом):
   /launch → «Выбрать канал» → «➕ Новый пост».
 Бот спросит по шагам: 1) сам пост (текст / фото / видео / гиф), 2) кнопки-ссылки под постом,
 3) когда опубликовать. Если в тексте есть {timer}, бот спросит ещё, до какого момента считать:
@@ -8,9 +8,15 @@
 Постов можно запланировать сколько угодно — они лежат в «📋 Мои посты».
 
 Условия: бот должен быть АДМИНОМ канала с правами «Публикация сообщений» и «Редактирование сообщений
-других админов» (закреплять — по желанию).
+других админов» (закреплять — по желанию). А сам пользователь — владельцем или админом этого канала с правом
+публикации: бот это проверяет, так что чужие каналы через него не опубликуешь.
 
-Хранение: посты лежат в JSON-файле (LAUNCH_DATA_PATH, по умолчанию data/launch_posts.json) и подхватываются
+Кто что видит: у каждого пользователя свой канал и свой список постов, чужие не видны никому.
+• Админы бота (ADMIN_CHAT_ID): посты сохраняются в базу (файл) и переживают перезапуск.
+• Обычные пользователи: базы нет — посты живут только в памяти, пока бот работает, а после
+  публикации исчезают из списка. После перезапуска бота их запланированные посты пропадают.
+
+Хранение (только админы): посты лежат в JSON-файле (LAUNCH_DATA_PATH, по умолчанию data/launch_posts.json) и подхватываются
 после перезапуска бота. ВАЖНО: на хостинге с временной файловой системой (например, Render без Disk) файл
 пропадает при деплое — тогда нужен постоянный диск или хранение через GitHubStorage.
 """
@@ -38,12 +44,10 @@ LATE_GRACE = 6 * 3600                  # если бот был выключен
 MAX_TEXT = 4096
 MAX_CAPTION = 1024
 
-_STATE = {
-    "chat_id": os.getenv("LAUNCH_CHANNEL_ID") or None,
-    "chat_title": None,
-    "posts": [],
-}
-_DRAFTS = {}          # user_id -> черновик поста (пока админ его собирает)
+_DEFAULT_CHAT = os.getenv("LAUNCH_CHANNEL_ID") or None   # канал по умолчанию — только для админов бота
+_USERS = {}           # user_id -> {"chat_id", "chat_title", "posts": [...]} — у каждого своё, чужое не видно
+MAX_ACTIVE_USER = 10  # сколько постов одновременно может ждать/идти у обычного пользователя
+_DRAFTS = {}          # user_id -> черновик поста (пока он его собирает)
 _BACKOFF = {}         # chat_id -> unix-время, до которого Telegram просил не править сообщения
 _WAITING = None       # waiting_users бота (общий словарь)
 _ADMIN_IDS = None     # функция, возвращающая список id админов
@@ -69,26 +73,65 @@ def _load():
     except Exception:
         logger.exception("Не удалось прочитать %s", DATA_PATH)
         return
-    _STATE["chat_id"] = data.get("chat_id") or _STATE["chat_id"]
-    _STATE["chat_title"] = data.get("chat_title")
-    posts = data.get("posts", [])
-    for p in posts:
-        if p.get("status") == "publishing" and not p.get("msg_id"):
-            p["status"] = "scheduled"     # бот упал посреди публикации — пробуем ещё раз
-    _STATE["posts"] = posts
+    users = data.get("users")
+    if users is None and "posts" in data:      # старый формат (один общий список) → отдаём первому админу
+        admins = _ADMIN_IDS()
+        users = {str(admins[0]): {"chat_id": data.get("chat_id"), "chat_title": data.get("chat_title"),
+                                  "posts": data.get("posts", [])}} if admins else {}
+    for key, st in (users or {}).items():
+        try:
+            uid = int(key)
+        except ValueError:
+            continue
+        posts = st.get("posts", [])
+        for p in posts:
+            p.setdefault("owner", uid)
+            if p.get("status") == "publishing" and not p.get("msg_id"):
+                p["status"] = "scheduled"     # бот упал посреди публикации — пробуем ещё раз
+        _USERS[uid] = {"chat_id": st.get("chat_id") or _DEFAULT_CHAT,
+                       "chat_title": st.get("chat_title"), "posts": posts}
 
 
 def _save():
+    """На диск пишем только данные админов бота. Посты обычных пользователей живут в памяти и в файл не попадают."""
     try:
+        data = {"users": {str(uid): st for uid, st in _USERS.items() if _is_admin(uid)}}
         folder = os.path.dirname(DATA_PATH)
         if folder:
             os.makedirs(folder, exist_ok=True)
         tmp = DATA_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(_STATE, f, ensure_ascii=False, indent=1)
+            json.dump(data, f, ensure_ascii=False, indent=1)
         os.replace(tmp, DATA_PATH)
     except Exception:
         logger.exception("Не удалось сохранить %s", DATA_PATH)
+
+
+def _u(uid: int) -> dict:
+    """Личное состояние пользователя (канал и посты). У каждого оно своё."""
+    st = _USERS.get(uid)
+    if st is None:
+        st = {"chat_id": _DEFAULT_CHAT if _is_admin(uid) else None, "chat_title": None, "posts": []}
+        _USERS[uid] = st
+    return st
+
+
+def _find(uid: int, post_id: str):
+    """Ищем пост только среди постов самого пользователя — чужие недоступны даже по подделанной кнопке."""
+    for p in _u(uid)["posts"]:
+        if p["id"] == post_id:
+            return p
+    return None
+
+
+async def _user_can_post(bot, chat_id, uid: int) -> bool:
+    try:
+        m = await bot.get_chat_member(chat_id, uid)
+    except TelegramError:
+        return False
+    if m.status == "creator":
+        return True
+    return m.status == "administrator" and bool(getattr(m, "can_post_messages", False))
 
 
 # ---------------------------------------------------------------- время
@@ -230,12 +273,11 @@ async def _edit(bot, p: dict, text: str):
         await bot.edit_message_text(text=text, **kw)
 
 
-async def _notify_admins(bot, text: str):
-    for admin in _ADMIN_IDS():
-        try:
-            await bot.send_message(chat_id=admin, text=text)
-        except Exception:
-            logger.exception("Не удалось написать админу %s", admin)
+async def _notify_owner(bot, p: dict, text: str):
+    try:
+        await bot.send_message(chat_id=p["owner"], text=text)
+    except Exception:
+        logger.warning("Не удалось написать пользователю %s", p.get("owner"))
 
 
 def _snippet(p: dict, n: int = 32) -> str:
@@ -250,6 +292,12 @@ async def _publish(bot, p: dict) -> bool:
         return False
     p["status"] = "publishing"            # сразу, чтобы параллельный вызов не опубликовал дубль
     now = time.time()
+    if not _is_admin(p["owner"]) and not await _user_can_post(bot, p["chat_id"], p["owner"]):
+        p["status"] = "error"
+        p["error"] = "у тебя больше нет прав публиковать в этом канале"
+        _save()
+        await _notify_owner(bot, p, f"❌ Пост «{_snippet(p)}» не опубликован: {p['error']}.")
+        return False
     try:
         sent = await _send(bot, p["chat_id"], p, _render(p, now))
     except Exception as e:
@@ -257,7 +305,7 @@ async def _publish(bot, p: dict) -> bool:
         p["status"] = "error"
         p["error"] = str(e)[:200]
         _save()
-        await _notify_admins(bot, f"❌ Не получилось опубликовать пост «{_snippet(p)}»: {e}\n\nОткрой /launch → «Мои посты».")
+        await _notify_owner(bot, p, f"❌ Не получилось опубликовать пост «{_snippet(p)}»: {e}\n\nОткрой /launch → «Мои посты».")
         return False
 
     p["msg_id"] = sent.message_id
@@ -272,7 +320,7 @@ async def _publish(bot, p: dict) -> bool:
             await bot.pin_chat_message(chat_id=p["chat_id"], message_id=sent.message_id, disable_notification=True)
         except Exception:
             pass   # нет права закреплять — не страшно
-    await _notify_admins(bot, f"✅ Пост «{_snippet(p)}» опубликован в «{_STATE['chat_title'] or p['chat_id']}»")
+    await _notify_owner(bot, p, f"✅ Пост «{_snippet(p)}» опубликован в «{p.get('chat_title') or p['chat_id']}»")
     return True
 
 
@@ -322,23 +370,26 @@ async def _update_timer(bot, p: dict, now: float):
 
 async def _tick(context: ContextTypes.DEFAULT_TYPE):
     now = time.time()
-    for p in list(_STATE["posts"]):
-        try:
-            if p["status"] == "scheduled" and now >= p["publish_at"]:
-                if now - p["publish_at"] > LATE_GRACE:
-                    p["status"] = "missed"
-                    _save()
-                    await _notify_admins(
-                        context.bot,
-                        f"⚠️ Пост «{_snippet(p)}» не вышел вовремя ({_fmt_dt(p['publish_at'])} МСК) — бот был выключен. "
-                        "Открой /launch → «Мои посты», чтобы опубликовать вручную.",
-                    )
-                    continue
-                await _publish(context.bot, p)
-            elif p["status"] == "live":
-                await _update_timer(context.bot, p, now)
-        except Exception:
-            logger.exception("Ошибка в планировщике постов (%s)", p.get("id"))
+    for uid, st in list(_USERS.items()):
+        for p in list(st["posts"]):
+            try:
+                if p["status"] == "scheduled" and now >= p["publish_at"]:
+                    if now - p["publish_at"] > LATE_GRACE:
+                        p["status"] = "missed"
+                        _save()
+                        await _notify_owner(
+                            context.bot, p,
+                            f"⚠️ Пост «{_snippet(p)}» не вышел вовремя ({_fmt_dt(p['publish_at'])} МСК) — бот был выключен. "
+                            "Открой /launch → «Мои посты», чтобы опубликовать вручную.",
+                        )
+                        continue
+                    await _publish(context.bot, p)
+                elif p["status"] == "live":
+                    await _update_timer(context.bot, p, now)
+            except Exception:
+                logger.exception("Ошибка в планировщике постов (%s)", p.get("id"))
+        if not _is_admin(uid):      # у обычных пользователей истории нет: вышедшие посты сразу убираем
+            st["posts"] = [p for p in st["posts"] if p["status"] != "done"]
 
 
 # ---------------------------------------------------------------- экраны
@@ -347,37 +398,33 @@ def _is_admin(user_id: int) -> bool:
     return user_id in _ADMIN_IDS()
 
 
-def _find(post_id: str):
-    for p in _STATE["posts"]:
-        if p["id"] == post_id:
-            return p
-    return None
-
-
-def _panel_view():
-    s = _STATE
-    posts = s["posts"]
+def _panel_view(uid: int):
+    st = _u(uid)
+    posts = st["posts"]
     waiting = [p for p in posts if p["status"] == "scheduled"]
     live = [p for p in posts if p["status"] == "live"]
     lines = ["📅 КОНСТРУКТОР ПОСТОВ", ""]
-    if not s["chat_id"]:
-        lines.append("Сначала выбери канал. Бот должен быть админом с правами на публикацию и редактирование.")
+    if not st["chat_id"]:
+        lines.append("Сначала выбери канал. Бот должен быть админом канала, и ты тоже — с правом публикации.")
     else:
-        lines.append(f"Канал: {s['chat_title'] or s['chat_id']}")
+        lines.append(f"Канал: {st['chat_title'] or st['chat_id']}")
         lines.append(f"Запланировано: {len(waiting)} · идёт таймер: {len(live)}")
         for p in sorted(waiting, key=lambda x: x["publish_at"])[:3]:
             lines.append(f"  ⏳ {_fmt_dt(p['publish_at'])} — {_snippet(p, 28)}")
+    if not _is_admin(uid):
+        lines += ["", "ℹ️ Посты видишь только ты. Они хранятся, пока бот работает: после его перезапуска "
+                      "запланированное пропадёт, а вышедшие посты из списка убираются сами."]
     kb = []
-    if s["chat_id"]:
+    if st["chat_id"]:
         kb.append([InlineKeyboardButton("➕ Новый пост", callback_data="launch_new")])
         kb.append([InlineKeyboardButton(f"📋 Мои посты ({len(posts)})", callback_data="launch_list")])
-    kb.append([InlineKeyboardButton("📺 Выбрать канал" if not s["chat_id"] else "📺 Другой канал",
+    kb.append([InlineKeyboardButton("📺 Выбрать канал" if not st["chat_id"] else "📺 Другой канал",
                                     callback_data="launch_choose")])
     return "\n".join(lines), InlineKeyboardMarkup(kb)
 
 
-def _list_view():
-    posts = _STATE["posts"]
+def _list_view(uid: int):
+    posts = _u(uid)["posts"]
     if not posts:
         return "📋 Постов пока нет.", InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Новый пост", callback_data="launch_new")],
@@ -575,7 +622,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE, actio
             return
 
         # edit_time — меняем время у уже запланированного поста
-        p = _find(d["post_id"])
+        p = _find(uid, d["post_id"])
         _DRAFTS.pop(uid, None)
         if p is None:
             await msg.reply_text("Пост не найден — возможно, его удалили.")
@@ -594,7 +641,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE, actio
 
 
 async def handle_channel_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = ""):
-    """Админ прислал @username канала или переслал пост из него."""
+    """Пользователь прислал @username канала или переслал пост из него."""
     msg = update.message
     uid = update.effective_user.id
 
@@ -643,33 +690,40 @@ async def handle_channel_input(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    _STATE["chat_id"] = chat.id
-    _STATE["chat_title"] = chat.title
+    # Обычный пользователь может выбрать только канал, где он сам владелец или админ с правом публикации.
+    if not _is_admin(uid) and not await _user_can_post(context.bot, chat.id, uid):
+        _WAITING[uid] = "launch_channel"
+        await msg.reply_text(
+            "❌ Ты не админ этого канала (или у тебя нет права «Публикация сообщений»), "
+            "поэтому публиковать в нём через бота нельзя.\n\nПришли свой канал."
+        )
+        return
+
+    st = _u(uid)
+    st["chat_id"] = chat.id
+    st["chat_title"] = chat.title
     _save()
-    text_p, kb = _panel_view()
+    text_p, kb = _panel_view(uid)
     await msg.reply_text(f"✅ Канал выбран: {chat.title}\n\n" + text_p, reply_markup=kb)
 
 
 # ---------------------------------------------------------------- команда и кнопки
 
 async def launch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private" or not _is_admin(update.effective_user.id):
+    if update.effective_chat.type != "private" or update.effective_user is None:
         return
     uid = update.effective_user.id
     _DRAFTS.pop(uid, None)
     _WAITING.pop(uid, None)
-    text, kb = _panel_view()
+    text, kb = _panel_view(uid)
     await update.message.reply_text(text, reply_markup=kb)
 
 
 async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid = query.from_user.id
-    if not _is_admin(uid):
-        await query.answer("Только для админов", show_alert=True)
-        return
     action, _, arg = query.data.partition(":")
-    s = _STATE
+    st = _u(uid)
 
     async def show(text, kb):
         try:
@@ -681,7 +735,7 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         _DRAFTS.pop(uid, None)
         _WAITING.pop(uid, None)
-        await show(*_panel_view())
+        await show(*_panel_view(uid))
         return
 
     if action == "launch_choose":
@@ -695,23 +749,27 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "launch_list":
         await query.answer()
-        await show(*_list_view())
+        await show(*_list_view(uid))
         return
 
     if action == "launch_clear":
         await query.answer("Убрал")
-        s["posts"] = [p for p in s["posts"] if p["status"] != "done"]
+        st["posts"] = [p for p in st["posts"] if p["status"] != "done"]
         _save()
-        await show(*_list_view())
+        await show(*_list_view(uid))
         return
 
     if action == "launch_new":
-        if not s["chat_id"]:
+        if not st["chat_id"]:
             await query.answer("Сначала выбери канал", show_alert=True)
+            return
+        active = sum(1 for p in st["posts"] if p["status"] in ("scheduled", "publishing", "live", "error", "missed"))
+        if not _is_admin(uid) and active >= MAX_ACTIVE_USER:
+            await query.answer(f"Можно держать не больше {MAX_ACTIVE_USER} постов одновременно", show_alert=True)
             return
         await query.answer()
         d = {"step": "content", "buttons": [], "pin": False,
-             "chat_id": s["chat_id"], "chat_title": s["chat_title"]}
+             "chat_id": st["chat_id"], "chat_title": st["chat_title"]}
         _DRAFTS[uid] = d
         await _ask(query.message, uid, d)
         return
@@ -720,7 +778,7 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Отменено")
         _DRAFTS.pop(uid, None)
         _WAITING.pop(uid, None)
-        await show(*_panel_view())
+        await show(*_panel_view(uid))
         return
 
     if action == "launch_nobtn":
@@ -765,26 +823,26 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         _DRAFTS.pop(uid, None)
         p = {
-            "id": uuid.uuid4().hex[:8], "status": "scheduled",
+            "id": uuid.uuid4().hex[:8], "status": "scheduled", "owner": uid,
             "chat_id": d["chat_id"], "chat_title": d.get("chat_title"),
             "media_type": d.get("media_type"), "file_id": d.get("file_id"),
             "text": d.get("text") or "", "buttons": d["buttons"], "pin": d["pin"],
             "publish_at": d["publish_at"], "countdown_to": d.get("countdown_to"),
             "msg_id": None, "last_edit": 0, "last_text": "",
         }
-        s["posts"].append(p)
+        st["posts"].append(p)
         _save()
         when = "сразу" if p["publish_at"] <= time.time() + 30 else f"{_fmt_dt(p['publish_at'])} МСК"
         await query.answer("Запланировано ✅")
-        text_p, kb = _panel_view()
+        text_p, kb = _panel_view(uid)
         await show(f"✅ Пост запланирован: выйдет {when}.\n\n" + text_p, kb)
         return
 
     # --- действия с конкретным постом ---
-    p = _find(arg) if arg else None
+    p = _find(uid, arg) if arg else None
     if action in ("launch_p", "launch_prev", "launch_now", "launch_time", "launch_del", "launch_delyes") and p is None:
         await query.answer("Пост не найден", show_alert=True)
-        await show(*_list_view())
+        await show(*_list_view(uid))
         return
 
     if action == "launch_p":
@@ -823,9 +881,9 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "launch_delyes":
         await query.answer("Удалено")
-        s["posts"] = [x for x in s["posts"] if x["id"] != p["id"]]
+        st["posts"] = [x for x in st["posts"] if x["id"] != p["id"]]
         _save()
-        await show(*_list_view())
+        await show(*_list_view(uid))
         return
 
 
@@ -841,4 +899,5 @@ def register(app, admin_ids_getter, waiting_users):
         app.job_queue.run_repeating(_tick, interval=1, first=2, name="launch_tick")
     else:
         logger.warning("JobQueue недоступен — запланированные посты (/launch) выходить сами не будут")
-    logger.info("Конструктор постов (/launch) подключён, постов в списке: %d", len(_STATE["posts"]))
+    logger.info("Конструктор постов (/launch) подключён для всех, сохранённых админских постов: %d",
+                sum(len(st["posts"]) for st in _USERS.values()))
