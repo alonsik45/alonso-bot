@@ -20,6 +20,7 @@ PROMOS = {
     "MATVEYBOOS": {"coins": 40, "uses": 50, "until": None, "note": "От Матвея"},
     "ALONSOTIK":    {"cards": 1, "min_rarity": "uncommon", "coins": 80, "uses": 100, "until": None, "note": "TikTok"},
     "FCALONSO":  {"cards": 1, "min_rarity": "rare", "uses": 32, "until": None, "note": "редкий приз за активность"},
+  "KOKOS":    { "coins": 1, "uses": 3, "until": None, "note": "kokos"},
     # Конкретные легендарные карточки. Названия кодов поменяй на свои, чтобы их нельзя было угадать.
     "ALONSO20726":   {"card_ids": ["alonso"], "uses": 1, "until": None, "note": "легендарная карточка «Алонсо»"},
     "ROMANM": {"card_ids": ["boss"],   "uses": 1, "until": None, "note": "легендарная карточка «Рома-Босс»"},
