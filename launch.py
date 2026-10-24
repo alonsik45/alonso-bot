@@ -1,19 +1,26 @@
-"""Запуск «Карточек»: тизер с живым таймером в канале и автоматический анонс в 00:00 (МСК).
+"""Конструктор постов для канала: /launch.
 
 Как пользоваться (админу, в личке с ботом):
-  /launch → «Выбрать канал» (пришли @username канала или перешли из него любой пост) → «Запустить таймер».
-Бот опубликует тизер без кнопки, будет обновлять в нём таймер, а в 00:00 опубликует анонс с кнопкой «Играть в карточки».
+  /launch → «Выбрать канал» → «➕ Новый пост».
+Бот спросит по шагам: 1) сам пост (текст / фото / видео / гиф), 2) кнопки-ссылки под постом,
+3) когда опубликовать. Если в тексте есть {timer}, бот спросит ещё, до какого момента считать:
+после публикации он сам будет подставлять вместо {timer} время до конца (например «Осталось: {timer}»), а в нужный момент напишет «время пришло 🔥».
+Постов можно запланировать сколько угодно — они лежат в «📋 Мои посты».
 
 Условия: бот должен быть АДМИНОМ канала с правами «Публикация сообщений» и «Редактирование сообщений
-других админов» (закреплять сообщения — по желанию).
+других админов» (закреплять — по желанию).
 
-Важно: состояние хранится в памяти. Если бот перезапустится или будет деплой, пока идёт таймер,
-таймер остановится — тогда в панели /launch есть кнопка «Опубликовать анонс сейчас».
+Хранение: посты лежат в JSON-файле (LAUNCH_DATA_PATH, по умолчанию data/launch_posts.json) и подхватываются
+после перезапуска бота. ВАЖНО: на хостинге с временной файловой системой (например, Render без Disk) файл
+пропадает при деплое — тогда нужен постоянный диск или хранение через GitHubStorage.
 """
 import html
+import json
 import logging
 import os
+import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -23,110 +30,78 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 logger = logging.getLogger(__name__)
 
 MSK = timezone(timedelta(hours=3))
-BOT_LINK = "https://t.me/alonsochbot"
+DATA_PATH = os.getenv("LAUNCH_DATA_PATH", "data/launch_posts.json")
 
-TEASER = (
-    "⏳ <b>Сегодня в 00:00 вас ждёт кое-что интересное 🔥</b>\n\n"
-    "Мы делали это с душой для тех, кто подписан на меня здесь ✨\n\n"
-    "Подсказка: компетишн 👀\n\n"
-    "⏱ Осталось: <b>{left}</b>"
-)
+TIMER_TAG = "{timer}"                 # это место в тексте заменится на «Осталось …»
+TIMER_DONE_TEXT = "время пришло 🔥"    # что появится, когда таймер дошёл до нуля
+LATE_GRACE = 6 * 3600                  # если бот был выключен и опоздал больше, чем на это — пост не выходит сам
+MAX_TEXT = 4096
+MAX_CAPTION = 1024
 
-TEASER_DONE = (
-    "🔥 <b>ВРЕМЯ ПРИШЛО!</b>\n\n"
-    "ALONSO GAME уже запущена! Анонс — ниже 👇"
-)
-
-ANNOUNCE = (
-    "🔥 <b>ALONSO GAME ЗАПУЩЕНА! 🔥</b>\n"
-    "Карточки, конкурс, дуэли, призы от Ромы. Сейчас всё по порядку 👇\n\n"
-
-    "🚀 <b>КАК ЗАЙТИ</b>\n"
-    "1. Открываешь бота @alonsochbot\n"
-    "2. Жмёшь кнопку приложения слева возле строки для текста\n"
-    "3. Внизу в меню светится фиолетовая кнопка «Игра», жми её 🎴\n\n"
-
-    "🎁 <b>ПРОМОКОД НА СТАРТ</b>\n"
-    "Вводи ALONSOTG и получай свои первые 100 🪙. Это 5 карточек! "
-    "Работает один раз на человека. Вводи в игре, во вкладке «Открыть» ⚡\n\n"
-
-    "🏆 <b>КОНКУРС «СОБЕРИ ВСЮ КОЛЛЕКЦИЮ»</b>\n"
-    "Всего 30 карточек, у каждой своя редкость. Собираешь все 30 — "
-    "попадаешь в рулетку на главный приз.\n"
-    "Приз пока секрет 🤫\n"
-    "Кто собрал раньше, у того выше шанс в рулетке. Но выиграть может "
-    "любой, кто собрал всё.\n"
-    "Тем, кто соберёт коллекцию, Рома запишет личное видео 🎬\n\n"
-
-    "🪙 <b>ГДЕ БРАТЬ МОНЕТЫ</b>\n"
-    "• Заходи каждый день за ежедневным бонусом: от 30 до 90 🪙. "
-    "Чем длиннее серия, тем больше. Пропустил день — серия обнулилась.\n"
-    "• Вопросы, идеи, предложения и «Что было дальше?» в боте тоже "
-    "дают монеты — до 40 🪙 в сутки.\n"
-    "• Промокоды: следи за моими соцсетями, все есть в закрепе.\n"
-    "• Приглашай друзей (ниже).\n\n"
-    "Одна карточка стоит 20 🪙.\n\n"
-
-    "🎴 <b>ЧТО С НИМИ ДЕЛАТЬ</b>\n"
-    "• <b>Обмен:</b> лишние дубликаты меняешь на карточку редкостью выше. "
-    "Не повезёт — вернётся одна карточка той же редкости. "
-    "Единственную копию отдать нельзя.\n"
-    "• <b>PvP:</b> ставишь карточку против соперника той же редкости, "
-    "шанс 50 на 50. Победил — забрал карточку соперника. Проиграл — "
-    "потерял свою. С ботом доступно до 5 дуэлей в день, а ещё можно "
-    "вызвать друга.\n"
-    "• <b>Награды от Ромы:</b> отдаёшь карточки (любые, у каждой редкости "
-    "своя цена) и забираешь приветствие, кружок, поздравление или ответ "
-    "на твой вопрос в видео!\n\n"
-
-    "👥 <b>ПРИГЛАШАЙ ДРУЗЕЙ</b>\n"
-    "Во вкладке «Друзья» берёшь свою ссылку и кидаешь корешам.\n"
-    "• Друг получает 100 🪙 сразу.\n"
-    "• Ты получаешь монеты за каждого друга, и чем больше друзей, "
-    "тем щедрее награда.\n"
-    "• За 3, 5, 10 и 25 друзей дают бонусные карточки (до легендарных!).\n"
-    "Друг должен быть новичком: пока не заходил в «Игру». "
-    "Награда за приглашения идёт максимум за 5 друзей в сутки.\n\n"
-
-    "⭐ <b>ДОНАТ ЗВЁЗДАМИ</b>\n"
-    "Играть можно и бесплатно. Хочешь быстрее — покупай за звёзды Telegram:\n"
-    "• 1 карточка: 5 ⭐\n"
-    "• Редкий пак (4 карточки): 49 ⭐\n"
-    "• Мега-пак (11 карточек): 199 ⭐\n"
-    "• Легендарная карта: 599 ⭐\n"
-    "• Две легендарные: 999 ⭐\n"
-    "Лимитов на покупки нет.\n\n"
-
-    "Заходи, собирай коллекцию и забирай приз 🔥\n"
-    "@alonsochbot"
-)
-
-BUTTON_TEXT = "🃏 Играть в карточки"
-
-# --- состояние (в памяти) ---
-_S = {
+_STATE = {
     "chat_id": os.getenv("LAUNCH_CHANNEL_ID") or None,
     "chat_title": None,
-    "msg_id": None,
-    "target": None,
-    "running": False,
-    "announced": False,
-    "last_edit": 0.0,
-    "last_text": "",
-    "backoff_until": 0.0,
-    "job": None,
+    "posts": [],
 }
-_WAITING = None
-_ADMIN_IDS = None
+_DRAFTS = {}          # user_id -> черновик поста (пока админ его собирает)
+_BACKOFF = {}         # chat_id -> unix-время, до которого Telegram просил не править сообщения
+_WAITING = None       # waiting_users бота (общий словарь)
+_ADMIN_IDS = None     # функция, возвращающая список id админов
+
+STATUS_ICON = {
+    "scheduled": "⏳", "publishing": "📤", "live": "⏱",
+    "done": "✅", "error": "❌", "missed": "⚠️",
+}
+STATUS_NAME = {
+    "scheduled": "ждёт своего времени", "publishing": "публикуется", "live": "опубликован, идёт таймер",
+    "done": "опубликован", "error": "ошибка публикации", "missed": "пропущен (бот был выключен)",
+}
 
 
-def _next_midnight(now: datetime = None) -> datetime:
-    now = now or datetime.now(MSK)
-    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+# ---------------------------------------------------------------- хранение
+
+def _load():
+    try:
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception:
+        logger.exception("Не удалось прочитать %s", DATA_PATH)
+        return
+    _STATE["chat_id"] = data.get("chat_id") or _STATE["chat_id"]
+    _STATE["chat_title"] = data.get("chat_title")
+    posts = data.get("posts", [])
+    for p in posts:
+        if p.get("status") == "publishing" and not p.get("msg_id"):
+            p["status"] = "scheduled"     # бот упал посреди публикации — пробуем ещё раз
+    _STATE["posts"] = posts
+
+
+def _save():
+    try:
+        folder = os.path.dirname(DATA_PATH)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        tmp = DATA_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_STATE, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, DATA_PATH)
+    except Exception:
+        logger.exception("Не удалось сохранить %s", DATA_PATH)
+
+
+# ---------------------------------------------------------------- время
+
+def _fmt_dt(ts: float) -> str:
+    return datetime.fromtimestamp(ts, MSK).strftime("%d.%m %H:%M")
 
 
 def _fmt_left(sec: float) -> str:
     sec = max(0, int(sec))
+    if sec >= 86400:
+        days, rest = divmod(sec, 86400)
+        return f"{days} дн {rest // 3600} ч {(rest % 3600) // 60:02d} мин"
     if sec >= 3600:
         minutes = sec // 60
         return f"{minutes // 60} ч {minutes % 60:02d} мин"
@@ -134,7 +109,7 @@ def _fmt_left(sec: float) -> str:
 
 
 def _interval(sec: float) -> int:
-    """Как часто менять тизер. Telegram ограничивает слишком частые правки."""
+    """Как часто менять пост с таймером. Telegram режет слишком частые правки, поэтому по секундам — только в конце."""
     if sec > 3600:
         return 60
     if sec > 600:
@@ -144,83 +119,478 @@ def _interval(sec: float) -> int:
     return 3
 
 
-def _teaser_text(sec: float) -> str:
-    return TEASER.format(left=html.escape(_fmt_left(sec)))
+def parse_when(text: str, now: datetime = None):
+    """«сейчас», «21:00», «25.10 21:00», «25.10.2026 21:00», «+30м», «+2ч», «+1д» → datetime (МСК) или None."""
+    now = now or datetime.now(MSK)
+    t = (text or "").strip().lower()
+    if t in ("сейчас", "now", "0"):
+        return now
+
+    m = re.fullmatch(r"(?:\+|через\s+)\s*(\d+)\s*([а-яa-z]*)", t)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        if unit.startswith("ч") or unit.startswith("h"):
+            return now + timedelta(hours=n)
+        if unit.startswith("д") or unit.startswith("d"):
+            return now + timedelta(days=n)
+        if unit.startswith("с") and not unit.startswith("со"):
+            return now + timedelta(seconds=n)
+        return now + timedelta(minutes=n)
+
+    m = re.fullmatch(r"(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?\s+(\d{1,2})[:.](\d{2})", t)
+    if m:
+        day, month, year, hour, minute = m.groups()
+        year = int(year) if year else now.year
+        if year < 100:
+            year += 2000
+        try:
+            return datetime(year, int(month), int(day), int(hour), int(minute), tzinfo=MSK)
+        except ValueError:
+            return None
+
+    m = re.fullmatch(r"(\d{1,2})[:.](\d{2})", t)
+    if m:
+        try:
+            dt = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        except ValueError:
+            return None
+        if dt <= now:
+            dt += timedelta(days=1)
+        return dt
+    return None
 
 
-def _post_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(BUTTON_TEXT, url=BOT_LINK)]]
-    )
+# ---------------------------------------------------------------- кнопки под постом
 
+def _norm_url(url: str) -> str:
+    url = url.strip()
+    if url.startswith("@"):
+        return "https://t.me/" + url[1:]
+    if url.lower().startswith(("http://", "https://", "tg://")):
+        return url
+    if re.match(r"^t\.me/", url, re.I):
+        return "https://" + url
+    if "." in url and " " not in url:
+        return "https://" + url
+    raise ValueError(f"Не похоже на ссылку: {url}")
+
+
+def parse_buttons(text: str):
+    """Строки вида «Текст | ссылка» → [[текст, url], ...]. Бросает ValueError с понятным текстом."""
+    rows = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "|" not in line:
+            raise ValueError(f"В строке нет « | »: {line}")
+        label, url = (x.strip() for x in line.rsplit("|", 1))
+        if not label:
+            raise ValueError(f"Пустой текст кнопки: {line}")
+        rows.append([label[:64], _norm_url(url)])
+    if len(rows) > 8:
+        raise ValueError("Многовато — максимум 8 кнопок.")
+    return rows
+
+
+def _post_kb(p: dict):
+    if not p.get("buttons"):
+        return None
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t, url=u)] for t, u in p["buttons"]])
+
+
+# ---------------------------------------------------------------- отправка / правка
+
+def _render(p: dict, now: float) -> str:
+    text = p.get("text") or ""
+    if TIMER_TAG in text and p.get("countdown_to"):
+        rem = p["countdown_to"] - now
+        left = TIMER_DONE_TEXT if rem <= 0 else _fmt_left(rem)
+        text = text.replace(TIMER_TAG, html.escape(left))
+    return text
+
+
+async def _send(bot, chat_id, p: dict, text: str):
+    kw = dict(chat_id=chat_id, parse_mode="HTML", reply_markup=_post_kb(p))
+    mt = p.get("media_type")
+    if mt == "photo":
+        return await bot.send_photo(photo=p["file_id"], caption=text or None, **kw)
+    if mt == "video":
+        return await bot.send_video(video=p["file_id"], caption=text or None, **kw)
+    if mt == "animation":
+        return await bot.send_animation(animation=p["file_id"], caption=text or None, **kw)
+    return await bot.send_message(text=text, **kw)
+
+
+async def _edit(bot, p: dict, text: str):
+    kw = dict(chat_id=p["chat_id"], message_id=p["msg_id"], parse_mode="HTML", reply_markup=_post_kb(p))
+    if p.get("media_type"):
+        await bot.edit_message_caption(caption=text, **kw)
+    else:
+        await bot.edit_message_text(text=text, **kw)
+
+
+async def _notify_admins(bot, text: str):
+    for admin in _ADMIN_IDS():
+        try:
+            await bot.send_message(chat_id=admin, text=text)
+        except Exception:
+            logger.exception("Не удалось написать админу %s", admin)
+
+
+def _snippet(p: dict, n: int = 32) -> str:
+    plain = html.unescape(re.sub(r"<[^>]+>", "", p.get("text") or "")).replace("\n", " ").strip()
+    if not plain:
+        plain = {"photo": "фото", "video": "видео", "animation": "гиф"}.get(p.get("media_type"), "без текста")
+    return plain[:n] + ("…" if len(plain) > n else "")
+
+
+async def _publish(bot, p: dict) -> bool:
+    if p["status"] not in ("scheduled", "error", "missed"):
+        return False
+    p["status"] = "publishing"            # сразу, чтобы параллельный вызов не опубликовал дубль
+    now = time.time()
+    try:
+        sent = await _send(bot, p["chat_id"], p, _render(p, now))
+    except Exception as e:
+        logger.exception("Не удалось опубликовать пост %s", p["id"])
+        p["status"] = "error"
+        p["error"] = str(e)[:200]
+        _save()
+        await _notify_admins(bot, f"❌ Не получилось опубликовать пост «{_snippet(p)}»: {e}\n\nОткрой /launch → «Мои посты».")
+        return False
+
+    p["msg_id"] = sent.message_id
+    p["last_edit"] = now
+    p["last_text"] = _render(p, now)
+    p.pop("error", None)
+    counting = bool(p.get("countdown_to")) and TIMER_TAG in (p.get("text") or "") and p["countdown_to"] > now
+    p["status"] = "live" if counting else "done"
+    _save()
+    if p.get("pin"):
+        try:
+            await bot.pin_chat_message(chat_id=p["chat_id"], message_id=sent.message_id, disable_notification=True)
+        except Exception:
+            pass   # нет права закреплять — не страшно
+    await _notify_admins(bot, f"✅ Пост «{_snippet(p)}» опубликован в «{_STATE['chat_title'] or p['chat_id']}»")
+    return True
+
+
+async def _update_timer(bot, p: dict, now: float):
+    remaining = p["countdown_to"] - now
+    final = remaining <= 0
+    chat = p["chat_id"]
+    if not final and (now < _BACKOFF.get(chat, 0) or now - p.get("last_edit", 0) < _interval(remaining)):
+        return
+    text = _render(p, now)
+    if text == p.get("last_text"):
+        if final:
+            p["status"] = "done"
+            _save()
+        return
+    try:
+        await _edit(bot, p, text)
+    except RetryAfter as e:
+        _BACKOFF[chat] = now + float(e.retry_after) + 1
+        logger.warning("Telegram просит подождать %s с — пауза в правках", e.retry_after)
+        return
+    except BadRequest as e:
+        low = str(e).lower()
+        if "not modified" in low:
+            pass
+        elif "not found" in low or "can't be edited" in low or "message to edit" in low:
+            p["status"] = "done"        # пост удалили в канале — править нечего
+            _save()
+            return
+        else:
+            logger.warning("Не удалось обновить таймер поста %s: %s", p["id"], e)
+            p["last_edit"] = now
+            if final:
+                p["status"] = "done"
+                _save()
+            return
+    except TelegramError as e:
+        logger.warning("Ошибка Telegram при обновлении таймера: %s", e)
+        p["last_edit"] = now
+        return
+    p["last_edit"] = now
+    p["last_text"] = text
+    if final:
+        p["status"] = "done"
+        _save()
+
+
+async def _tick(context: ContextTypes.DEFAULT_TYPE):
+    now = time.time()
+    for p in list(_STATE["posts"]):
+        try:
+            if p["status"] == "scheduled" and now >= p["publish_at"]:
+                if now - p["publish_at"] > LATE_GRACE:
+                    p["status"] = "missed"
+                    _save()
+                    await _notify_admins(
+                        context.bot,
+                        f"⚠️ Пост «{_snippet(p)}» не вышел вовремя ({_fmt_dt(p['publish_at'])} МСК) — бот был выключен. "
+                        "Открой /launch → «Мои посты», чтобы опубликовать вручную.",
+                    )
+                    continue
+                await _publish(context.bot, p)
+            elif p["status"] == "live":
+                await _update_timer(context.bot, p, now)
+        except Exception:
+            logger.exception("Ошибка в планировщике постов (%s)", p.get("id"))
+
+
+# ---------------------------------------------------------------- экраны
 
 def _is_admin(user_id: int) -> bool:
     return user_id in _ADMIN_IDS()
 
 
-# ---------------------------------------------------------------- панель админа
+def _find(post_id: str):
+    for p in _STATE["posts"]:
+        if p["id"] == post_id:
+            return p
+    return None
+
 
 def _panel_view():
-    s = _S
-    if s["running"]:
-        left = _fmt_left(s["target"].timestamp() - time.time())
-        text = (
-            "🚀 ЗАПУСК КАРТОЧЕК\n\n"
-            f"Канал: {s['chat_title'] or s['chat_id']}\n"
-            f"Таймер идёт, до анонса: {left}\n"
-            f"Анонс выйдет сам в {s['target'].strftime('%d.%m %H:%M')} МСК.\n\n"
-            "⚠️ Если бот перезапустится, таймер остановится — тогда нажми «Опубликовать анонс сейчас»."
-        )
-        kb = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data="launch_panel")],
-            [InlineKeyboardButton("📣 Опубликовать анонс сейчас", callback_data="launch_now")],
-            [InlineKeyboardButton("🛑 Остановить таймер", callback_data="launch_stop")],
-        ]
-        return text, InlineKeyboardMarkup(kb)
-
-    if s["announced"]:
-        text = (
-            "🚀 ЗАПУСК КАРТОЧЕК\n\n"
-            f"✅ Анонс уже опубликован в канале «{s['chat_title'] or s['chat_id']}»."
-        )
-        return text, InlineKeyboardMarkup(
-            [[InlineKeyboardButton("📺 Выбрать другой канал", callback_data="launch_choose")]]
-        )
-
+    s = _STATE
+    posts = s["posts"]
+    waiting = [p for p in posts if p["status"] == "scheduled"]
+    live = [p for p in posts if p["status"] == "live"]
+    lines = ["📅 КОНСТРУКТОР ПОСТОВ", ""]
     if not s["chat_id"]:
-        text = (
-            "🚀 ЗАПУСК КАРТОЧЕК\n\n"
-            "Сначала выбери канал. Бот должен быть админом канала с правами на публикацию "
-            "и редактирование сообщений."
-        )
-        kb = [
-            [InlineKeyboardButton("📺 Выбрать канал", callback_data="launch_choose")],
-            [InlineKeyboardButton("👁 Предпросмотр постов", callback_data="launch_preview")],
-        ]
-        return text, InlineKeyboardMarkup(kb)
+        lines.append("Сначала выбери канал. Бот должен быть админом с правами на публикацию и редактирование.")
+    else:
+        lines.append(f"Канал: {s['chat_title'] or s['chat_id']}")
+        lines.append(f"Запланировано: {len(waiting)} · идёт таймер: {len(live)}")
+        for p in sorted(waiting, key=lambda x: x["publish_at"])[:3]:
+            lines.append(f"  ⏳ {_fmt_dt(p['publish_at'])} — {_snippet(p, 28)}")
+    kb = []
+    if s["chat_id"]:
+        kb.append([InlineKeyboardButton("➕ Новый пост", callback_data="launch_new")])
+        kb.append([InlineKeyboardButton(f"📋 Мои посты ({len(posts)})", callback_data="launch_list")])
+    kb.append([InlineKeyboardButton("📺 Выбрать канал" if not s["chat_id"] else "📺 Другой канал",
+                                    callback_data="launch_choose")])
+    return "\n".join(lines), InlineKeyboardMarkup(kb)
 
-    target = _next_midnight()
-    text = (
-        "🚀 ЗАПУСК КАРТОЧЕК\n\n"
-        f"Канал: {s['chat_title'] or s['chat_id']}\n"
-        f"Анонс выйдет в {target.strftime('%d.%m %H:%M')} МСК.\n\n"
-        "Жми «Запустить таймер»: бот опубликует тизер без кнопки, будет менять время до анонса "
-        "и в полночь сам выложит большой пост с кнопкой игры."
-    )
-    kb = [
-        [InlineKeyboardButton("🚀 Запустить таймер", callback_data="launch_start")],
-        [InlineKeyboardButton("👁 Предпросмотр постов", callback_data="launch_preview")],
-        [InlineKeyboardButton("📣 Опубликовать анонс сейчас", callback_data="launch_now")],
-        [InlineKeyboardButton("📺 Другой канал", callback_data="launch_choose")],
+
+def _list_view():
+    posts = _STATE["posts"]
+    if not posts:
+        return "📋 Постов пока нет.", InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Новый пост", callback_data="launch_new")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="launch_panel")]])
+    active = sorted([p for p in posts if p["status"] in ("scheduled", "publishing", "live", "error", "missed")],
+                    key=lambda x: x["publish_at"])
+    finished = sorted([p for p in posts if p["status"] == "done"], key=lambda x: -x["publish_at"])
+    kb = []
+    for p in (active + finished)[:25]:
+        icon = STATUS_ICON.get(p["status"], "•")
+        kb.append([InlineKeyboardButton(f"{icon} {_fmt_dt(p['publish_at'])} · {_snippet(p, 26)}",
+                                        callback_data=f"launch_p:{p['id']}")])
+    tail = []
+    if finished:
+        tail.append(InlineKeyboardButton("🧹 Убрать опубликованные", callback_data="launch_clear"))
+    tail.append(InlineKeyboardButton("◀️ Назад", callback_data="launch_panel"))
+    kb.append(tail)
+    return "📋 МОИ ПОСТЫ\n⏳ ждёт · ⏱ идёт таймер · ✅ вышел · ❌ ошибка", InlineKeyboardMarkup(kb)
+
+
+def _card_view(p: dict):
+    lines = [
+        f"📝 «{_snippet(p, 40)}»",
+        f"Статус: {STATUS_ICON.get(p['status'], '')} {STATUS_NAME.get(p['status'], p['status'])}",
+        f"Выход: {_fmt_dt(p['publish_at'])} МСК",
     ]
-    return text, InlineKeyboardMarkup(kb)
+    if p.get("countdown_to"):
+        lines.append(f"Таймер до: {_fmt_dt(p['countdown_to'])} МСК")
+    lines.append(f"Кнопок: {len(p.get('buttons') or [])} · закрепить: {'да' if p.get('pin') else 'нет'}")
+    if p.get("error"):
+        lines.append(f"Ошибка: {p['error']}")
+    kb = [[InlineKeyboardButton("👁 Показать", callback_data=f"launch_prev:{p['id']}")]]
+    if p["status"] in ("scheduled", "error", "missed"):
+        kb.append([InlineKeyboardButton("📤 Опубликовать сейчас", callback_data=f"launch_now:{p['id']}"),
+                   InlineKeyboardButton("🕒 Время", callback_data=f"launch_time:{p['id']}")])
+    kb.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"launch_del:{p['id']}")])
+    kb.append([InlineKeyboardButton("◀️ К списку", callback_data="launch_list")])
+    return "\n".join(lines), InlineKeyboardMarkup(kb)
 
 
-async def launch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private" or not _is_admin(update.effective_user.id):
+# ---------------------------------------------------------------- мастер «новый пост»
+
+_CANCEL_ROW = [InlineKeyboardButton("✖️ Отмена", callback_data="launch_cancel")]
+
+PROMPTS = {
+    "content": (
+        "📝 Шаг 1/3 — пришли сам пост.\n\n"
+        "Текст, либо фото / видео / гифку с подписью. Оформление (жирный, курсив, ссылки) сохранится.\n\n"
+        "⏱ Хочешь живой таймер — впиши в текст {timer}, например «Осталось: {timer}». Бот сам подставит время и будет обновлять."
+    ),
+    "buttons": (
+        "🔘 Шаг 2/3 — кнопки под постом.\n\n"
+        "По одной на строку, в формате:\nТекст кнопки | ссылка\n\n"
+        "Например:\n🃏 Играть | https://t.me/alonsochbot\n📢 Канал | @alonsoroma\n\n"
+        "Кнопки встанут друг под другом."
+    ),
+    "when": (
+        "🕒 Шаг 3/3 — когда опубликовать (время МСК).\n\n"
+        "Примеры:\n• сейчас\n• 21:00 — сегодня (или завтра, если время прошло)\n• 25.10 21:00\n• +30м, +2ч, +1д"
+    ),
+    "countdown": (
+        "⏱ До какого момента считать таймер (МСК)?\n\n"
+        "Тот же формат: 00:00, 25.10 21:00, +3ч. В этот момент вместо {timer} появится «" + TIMER_DONE_TEXT + "»."
+    ),
+    "edit_time": "🕒 Пришли новое время публикации (МСК): 21:00, 25.10 21:00, +2ч …",
+}
+
+
+def _prompt_kb(step: str):
+    if step == "buttons":
+        return InlineKeyboardMarkup([[InlineKeyboardButton("Без кнопок", callback_data="launch_nobtn")], _CANCEL_ROW])
+    if step == "when":
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Сейчас", callback_data="launch_whennow")], _CANCEL_ROW])
+    return InlineKeyboardMarkup([_CANCEL_ROW])
+
+
+async def _ask(message, uid: int, d: dict):
+    _WAITING[uid] = "launch_input"
+    await message.reply_text(PROMPTS[d["step"]], reply_markup=_prompt_kb(d["step"]))
+
+
+def _summary(d: dict) -> str:
+    lines = ["📋 Проверь — копия поста выше.", "",
+             f"Канал: {d.get('chat_title') or d['chat_id']}",
+             f"Выйдет: {'сразу' if d['publish_at'] <= time.time() + 30 else _fmt_dt(d['publish_at']) + ' МСК'}"]
+    if d.get("countdown_to"):
+        lines.append(f"Таймер до: {_fmt_dt(d['countdown_to'])} МСК")
+    lines.append(f"Кнопок: {len(d['buttons'])}")
+    return "\n".join(lines)
+
+
+def _confirm_kb(d: dict):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Запланировать", callback_data="launch_confirm")],
+        [InlineKeyboardButton(f"📌 Закрепить: {'да' if d['pin'] else 'нет'}", callback_data="launch_pin")],
+        _CANCEL_ROW,
+    ])
+
+
+async def _show_confirm(bot, message, uid: int, d: dict):
+    try:
+        await _send(bot, message.chat_id, d, _render(d, time.time()))
+    except TelegramError as e:
+        d["step"] = "content"
+        await message.reply_text(f"❌ Telegram не принял такой пост: {e}\n\nПришли пост заново.")
+        await _ask(message, uid, d)
         return
-    text, kb = _panel_view()
-    await update.message.reply_text(text, reply_markup=kb)
+    d["step"] = "confirm"
+    _WAITING.pop(uid, None)
+    await message.reply_text(_summary(d), reply_markup=_confirm_kb(d))
+
+
+async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, text: str = ""):
+    """Сюда бот отдаёт сообщения админа, пока тот что-то вводит (action = 'launch_channel' / 'launch_input')."""
+    if action == "launch_channel":
+        await handle_channel_input(update, context, text)
+        return
+
+    msg = update.message
+    uid = update.effective_user.id
+    d = _DRAFTS.get(uid)
+    if not d:
+        await msg.reply_text("Черновик потерялся. Открой /launch и начни заново.")
+        return
+    step = d["step"]
+
+    if step == "content":
+        mt, fid = None, None
+        if msg.photo:
+            mt, fid, body, plain = "photo", msg.photo[-1].file_id, msg.caption_html or "", msg.caption or ""
+        elif msg.video:
+            mt, fid, body, plain = "video", msg.video.file_id, msg.caption_html or "", msg.caption or ""
+        elif msg.animation:
+            mt, fid, body, plain = "animation", msg.animation.file_id, msg.caption_html or "", msg.caption or ""
+        elif msg.text:
+            body, plain = msg.text_html, msg.text
+        else:
+            await msg.reply_text("Нужен текст, фото, видео или гиф. Пришли ещё раз 👇")
+            _WAITING[uid] = "launch_input"
+            return
+        limit = MAX_CAPTION if mt else MAX_TEXT
+        if len(plain) > limit:
+            await msg.reply_text(f"Слишком длинно: {len(plain)} символов, максимум {limit}"
+                                 f"{' для подписи к медиа' if mt else ''}. Сократи и пришли ещё раз.")
+            _WAITING[uid] = "launch_input"
+            return
+        if not mt and not plain.strip():
+            await msg.reply_text("Пустой пост. Пришли текст 👇")
+            _WAITING[uid] = "launch_input"
+            return
+        d.update(media_type=mt, file_id=fid, text=body)
+        d["step"] = "buttons"
+        await _ask(msg, uid, d)
+        return
+
+    if step == "buttons":
+        try:
+            d["buttons"] = parse_buttons(text)
+        except ValueError as e:
+            await msg.reply_text(f"❌ {e}\n\nПопробуй ещё раз в формате «Текст | ссылка».")
+            _WAITING[uid] = "launch_input"
+            return
+        d["step"] = "when"
+        await _ask(msg, uid, d)
+        return
+
+    if step in ("when", "countdown", "edit_time"):
+        dt = parse_when(text)
+        if dt is None:
+            await msg.reply_text("Не понял время 🤔 Примеры: 21:00 · 25.10 21:00 · +30м · +2ч · сейчас")
+            _WAITING[uid] = "launch_input"
+            return
+        ts = dt.timestamp()
+        if ts < time.time() - 60:
+            await msg.reply_text(f"Это время уже прошло ({_fmt_dt(ts)} МСК). Пришли другое.")
+            _WAITING[uid] = "launch_input"
+            return
+
+        if step == "when":
+            d["publish_at"] = ts
+            if TIMER_TAG in (d.get("text") or ""):
+                d["step"] = "countdown"
+                await _ask(msg, uid, d)
+            else:
+                await _show_confirm(context.bot, msg, uid, d)
+            return
+
+        if step == "countdown":
+            if ts <= d["publish_at"]:
+                await msg.reply_text("Таймер должен заканчиваться позже, чем пост выходит. Пришли другое время.")
+                _WAITING[uid] = "launch_input"
+                return
+            d["countdown_to"] = ts
+            await _show_confirm(context.bot, msg, uid, d)
+            return
+
+        # edit_time — меняем время у уже запланированного поста
+        p = _find(d["post_id"])
+        _DRAFTS.pop(uid, None)
+        if p is None:
+            await msg.reply_text("Пост не найден — возможно, его удалили.")
+            return
+        if p.get("countdown_to") and p["countdown_to"] <= ts:
+            await msg.reply_text("Таймер этого поста заканчивается раньше нового времени выхода. "
+                                 "Удали пост и создай заново с другим временем.")
+            return
+        p["publish_at"] = ts
+        if p["status"] in ("error", "missed"):
+            p["status"] = "scheduled"
+        _save()
+        text_c, kb = _card_view(p)
+        await msg.reply_text("✅ Время обновлено.\n\n" + text_c, reply_markup=kb)
+        return
 
 
 async def handle_channel_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = ""):
@@ -243,9 +613,7 @@ async def handle_channel_input(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if chat_ref is None:
         _WAITING[uid] = "launch_channel"
-        await msg.reply_text(
-            "Пришли @username канала (например @alonsoroma) или перешли сюда любой пост из канала."
-        )
+        await msg.reply_text("Пришли @username канала (например @alonsoroma) или перешли сюда любой пост из канала.")
         return
 
     try:
@@ -254,8 +622,7 @@ async def handle_channel_input(update: Update, context: ContextTypes.DEFAULT_TYP
     except TelegramError as e:
         _WAITING[uid] = "launch_channel"
         await msg.reply_text(
-            f"❌ Не получилось открыть канал: {e}\n\n"
-            "Проверь, что бот добавлен в канал админом, и пришли ещё раз."
+            f"❌ Не получилось открыть канал: {e}\n\nПроверь, что бот добавлен в канал админом, и пришли ещё раз."
         )
         return
 
@@ -276,237 +643,202 @@ async def handle_channel_input(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    _S["chat_id"] = chat.id
-    _S["chat_title"] = chat.title
+    _STATE["chat_id"] = chat.id
+    _STATE["chat_title"] = chat.title
+    _save()
+    text_p, kb = _panel_view()
+    await msg.reply_text(f"✅ Канал выбран: {chat.title}\n\n" + text_p, reply_markup=kb)
+
+
+# ---------------------------------------------------------------- команда и кнопки
+
+async def launch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private" or not _is_admin(update.effective_user.id):
+        return
+    uid = update.effective_user.id
+    _DRAFTS.pop(uid, None)
+    _WAITING.pop(uid, None)
     text, kb = _panel_view()
-    await msg.reply_text(f"✅ Канал выбран: {chat.title}\n\n" + text, reply_markup=kb)
+    await update.message.reply_text(text, reply_markup=kb)
 
-
-# ---------------------------------------------------------------- таймер
-
-async def _tick(context: ContextTypes.DEFAULT_TYPE):
-    s = _S
-    if not s["running"] or s["target"] is None:
-        return
-    now = time.time()
-    remaining = s["target"].timestamp() - now
-    if remaining <= 0:
-        await _announce(context.bot)
-        return
-    if now < s["backoff_until"] or now - s["last_edit"] < _interval(remaining):
-        return
-    text = _teaser_text(remaining)
-    if text == s["last_text"]:
-        return
-    try:
-        await context.bot.edit_message_text(
-            chat_id=s["chat_id"],
-            message_id=s["msg_id"],
-            text=text,
-            parse_mode="HTML",
-        )
-    except RetryAfter as e:
-        s["backoff_until"] = now + float(e.retry_after) + 1
-        logger.warning("Telegram просит подождать %s с — пауза в правках тизера", e.retry_after)
-    except BadRequest as e:
-        if "not modified" not in str(e).lower():
-            logger.warning("Не удалось обновить тизер: %s", e)
-    except TelegramError as e:
-        logger.warning("Ошибка Telegram при обновлении тизера: %s", e)
-    else:
-        s["last_edit"] = now
-        s["last_text"] = text
-
-
-async def _notify_admins(bot, text: str):
-    for admin in _ADMIN_IDS():
-        try:
-            await bot.send_message(chat_id=admin, text=text)
-        except Exception:
-            logger.exception("Не удалось написать админу %s", admin)
-
-
-def _stop_job():
-    job = _S.get("job")
-    if job is not None:
-        try:
-            job.schedule_removal()
-        except Exception:
-            pass
-    _S["job"] = None
-    _S["running"] = False
-
-
-async def _announce(bot) -> bool:
-    """Публикует большой анонс (один раз). Возвращает True, если вышло."""
-    s = _S
-    if s["announced"]:
-        return False
-    s["announced"] = True
-    _stop_job()
-    try:
-        sent = await bot.send_message(
-            chat_id=s["chat_id"],
-            text=ANNOUNCE,
-            parse_mode="HTML",
-            reply_markup=_post_kb(),
-            disable_web_page_preview=True,
-        )
-    except Exception as e:
-        s["announced"] = False
-        logger.exception("Не удалось опубликовать анонс")
-        await _notify_admins(
-            bot,
-            f"❌ Не удалось опубликовать анонс в канале: {e}\n\n"
-            "Открой /launch и нажми «Опубликовать анонс сейчас».",
-        )
-        return False
-
-    if s["msg_id"]:
-        try:
-            await bot.edit_message_text(
-                chat_id=s["chat_id"],
-                message_id=s["msg_id"],
-                text=TEASER_DONE,
-                parse_mode="HTML",
-            )
-        except Exception:
-            logger.warning("Не удалось обновить тизер после анонса")
-        try:
-            await bot.unpin_chat_message(chat_id=s["chat_id"], message_id=s["msg_id"])
-        except Exception:
-            pass
-
-    try:
-        await bot.pin_chat_message(
-            chat_id=s["chat_id"],
-            message_id=sent.message_id,
-            disable_notification=True,
-        )
-    except Exception:
-        pass
-
-    await _notify_admins(
-        bot,
-        f"✅ Анонс опубликован в канале «{s['chat_title'] or s['chat_id']}» 🎉",
-    )
-    return True
-
-
-# ---------------------------------------------------------------- кнопки
 
 async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if not _is_admin(query.from_user.id):
+    uid = query.from_user.id
+    if not _is_admin(uid):
         await query.answer("Только для админов", show_alert=True)
         return
-    data = query.data
-    s = _S
+    action, _, arg = query.data.partition(":")
+    s = _STATE
 
-    async def show_panel():
-        text, kb = _panel_view()
+    async def show(text, kb):
         try:
             await query.edit_message_text(text, reply_markup=kb)
         except BadRequest:
-            pass
+            pass   # «сообщение не изменилось»
 
-    if data == "launch_panel":
+    if action == "launch_panel":
         await query.answer()
-        await show_panel()
+        _DRAFTS.pop(uid, None)
+        _WAITING.pop(uid, None)
+        await show(*_panel_view())
         return
 
-    if data == "launch_choose":
+    if action == "launch_choose":
         await query.answer()
-        _WAITING[query.from_user.id] = "launch_channel"
+        _WAITING[uid] = "launch_channel"
         await query.message.reply_text(
             "📺 Пришли @username канала (например @alonsoroma) или перешли сюда любой пост из канала.\n\n"
             "Бот должен быть админом канала с правами «Публикация сообщений» и «Редактирование сообщений»."
         )
         return
 
-    if data == "launch_preview":
+    if action == "launch_list":
         await query.answer()
-        await query.message.reply_text(
-            _teaser_text(5 * 3600 + 23 * 60),
-            parse_mode="HTML",
-        )
-        await query.message.reply_text(
-            ANNOUNCE,
-            parse_mode="HTML",
-            reply_markup=_post_kb(),
-            disable_web_page_preview=True,
-        )
+        await show(*_list_view())
         return
 
-    if data == "launch_start":
-        if s["running"]:
-            await query.answer("Таймер уже идёт", show_alert=True)
-            return
+    if action == "launch_clear":
+        await query.answer("Убрал")
+        s["posts"] = [p for p in s["posts"] if p["status"] != "done"]
+        _save()
+        await show(*_list_view())
+        return
+
+    if action == "launch_new":
         if not s["chat_id"]:
             await query.answer("Сначала выбери канал", show_alert=True)
             return
-        if context.application.job_queue is None:
-            await query.answer("JobQueue недоступен — таймер не запустить", show_alert=True)
+        await query.answer()
+        d = {"step": "content", "buttons": [], "pin": False,
+             "chat_id": s["chat_id"], "chat_title": s["chat_title"]}
+        _DRAFTS[uid] = d
+        await _ask(query.message, uid, d)
+        return
+
+    if action == "launch_cancel":
+        await query.answer("Отменено")
+        _DRAFTS.pop(uid, None)
+        _WAITING.pop(uid, None)
+        await show(*_panel_view())
+        return
+
+    if action == "launch_nobtn":
+        d = _DRAFTS.get(uid)
+        if not d or d["step"] != "buttons":
+            await query.answer("Это уже неактуально", show_alert=True)
             return
-        s["announced"] = False
-        s["target"] = _next_midnight()
-        remaining = s["target"].timestamp() - time.time()
+        await query.answer()
+        d["buttons"] = []
+        d["step"] = "when"
+        await _ask(query.message, uid, d)
+        return
+
+    if action == "launch_whennow":
+        d = _DRAFTS.get(uid)
+        if not d or d["step"] != "when":
+            await query.answer("Это уже неактуально", show_alert=True)
+            return
+        await query.answer()
+        d["publish_at"] = time.time()
+        if TIMER_TAG in (d.get("text") or ""):
+            d["step"] = "countdown"
+            await _ask(query.message, uid, d)
+        else:
+            await _show_confirm(context.bot, query.message, uid, d)
+        return
+
+    if action == "launch_pin":
+        d = _DRAFTS.get(uid)
+        if not d or d["step"] != "confirm":
+            await query.answer("Это уже неактуально", show_alert=True)
+            return
+        d["pin"] = not d["pin"]
+        await query.answer()
+        await show(_summary(d), _confirm_kb(d))
+        return
+
+    if action == "launch_confirm":
+        d = _DRAFTS.get(uid)
+        if not d or d["step"] != "confirm":
+            await query.answer("Это уже неактуально", show_alert=True)
+            return
+        _DRAFTS.pop(uid, None)
+        p = {
+            "id": uuid.uuid4().hex[:8], "status": "scheduled",
+            "chat_id": d["chat_id"], "chat_title": d.get("chat_title"),
+            "media_type": d.get("media_type"), "file_id": d.get("file_id"),
+            "text": d.get("text") or "", "buttons": d["buttons"], "pin": d["pin"],
+            "publish_at": d["publish_at"], "countdown_to": d.get("countdown_to"),
+            "msg_id": None, "last_edit": 0, "last_text": "",
+        }
+        s["posts"].append(p)
+        _save()
+        when = "сразу" if p["publish_at"] <= time.time() + 30 else f"{_fmt_dt(p['publish_at'])} МСК"
+        await query.answer("Запланировано ✅")
+        text_p, kb = _panel_view()
+        await show(f"✅ Пост запланирован: выйдет {when}.\n\n" + text_p, kb)
+        return
+
+    # --- действия с конкретным постом ---
+    p = _find(arg) if arg else None
+    if action in ("launch_p", "launch_prev", "launch_now", "launch_time", "launch_del", "launch_delyes") and p is None:
+        await query.answer("Пост не найден", show_alert=True)
+        await show(*_list_view())
+        return
+
+    if action == "launch_p":
+        await query.answer()
+        await show(*_card_view(p))
+        return
+
+    if action == "launch_prev":
+        await query.answer()
         try:
-            sent = await context.bot.send_message(
-                chat_id=s["chat_id"],
-                text=_teaser_text(remaining),
-                parse_mode="HTML",
-            )
+            await _send(context.bot, query.message.chat_id, p, _render(p, time.time()))
         except TelegramError as e:
-            await query.answer()
-            await query.message.reply_text(
-                f"❌ Не получилось опубликовать тизер: {e}\n\nПроверь права бота в канале."
-            )
-            return
-        s["msg_id"] = sent.message_id
-        s["last_edit"] = time.time()
-        s["last_text"] = _teaser_text(remaining)
-        s["backoff_until"] = 0.0
-        s["running"] = True
-        try:
-            await context.bot.pin_chat_message(
-                chat_id=s["chat_id"],
-                message_id=sent.message_id,
-                disable_notification=True,
-            )
-        except Exception:
-            pass
-        s["job"] = context.application.job_queue.run_repeating(
-            _tick, interval=1, first=1, name="launch_tick"
-        )
-        await query.answer("🚀 Таймер запущен!")
-        await show_panel()
+            await query.message.reply_text(f"❌ Не получилось показать: {e}")
         return
 
-    if data == "launch_stop":
-        await query.answer("Таймер остановлен")
-        _stop_job()
-        await show_panel()
-        return
-
-    if data == "launch_now":
-        if not s["chat_id"]:
-            await query.answer("Сначала выбери канал", show_alert=True)
-            return
+    if action == "launch_now":
         await query.answer("Публикую…")
-        if s["running"]:
-            _stop_job()
-        s["announced"] = False
-        await _announce(context.bot)
-        await show_panel()
+        await _publish(context.bot, p)
+        await show(*_card_view(p))
+        return
+
+    if action == "launch_time":
+        await query.answer()
+        _DRAFTS[uid] = {"step": "edit_time", "post_id": p["id"]}
+        await _ask(query.message, uid, _DRAFTS[uid])
+        return
+
+    if action == "launch_del":
+        await query.answer()
+        extra = ("\n\nТаймер остановится, но сам пост в канале останется." if p["status"] == "live"
+                 else "\n\nИз канала пост не удаляется." if p["status"] == "done" else "")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Да, удалить", callback_data=f"launch_delyes:{p['id']}")],
+                                   [InlineKeyboardButton("◀️ Нет", callback_data=f"launch_p:{p['id']}")]])
+        await show(f"Удалить «{_snippet(p, 40)}» из конструктора?{extra}", kb)
+        return
+
+    if action == "launch_delyes":
+        await query.answer("Удалено")
+        s["posts"] = [x for x in s["posts"] if x["id"] != p["id"]]
+        _save()
+        await show(*_list_view())
         return
 
 
 def register(app, admin_ids_getter, waiting_users):
-    """Подключает /launch и кнопки. Вызывается из main() бота."""
+    """Подключает /launch, кнопки и планировщик. Вызывается из main() бота."""
     global _WAITING, _ADMIN_IDS
     _WAITING = waiting_users
     _ADMIN_IDS = admin_ids_getter
+    _load()
     app.add_handler(CommandHandler("launch", launch_command))
     app.add_handler(CallbackQueryHandler(launch_callback, pattern="^launch_"))
-    logger.info("Запуск карточек (/launch) подключён")
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(_tick, interval=1, first=2, name="launch_tick")
+    else:
+        logger.warning("JobQueue недоступен — запланированные посты (/launch) выходить сами не будут")
+    logger.info("Конструктор постов (/launch) подключён, постов в списке: %d", len(_STATE["posts"]))
