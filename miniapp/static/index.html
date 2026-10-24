@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Alonso БОТ</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="style.css?v=13" />
+</head>
+<body>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- CARD REVEAL OVERLAY -->
+  <div class="card-overlay" id="card-overlay" onclick="closeOverlay(event)">
+    <div class="rv-stage" id="rv-stage">
+      <div class="rv-glow"></div>
+      <div class="rv-counter" id="rv-counter"></div>
+      <div class="rv-card">
+        <div class="rv-face rv-back">
+          <span class="rv-mark"></span>
+          <span class="rv-shimmer"></span>
+        </div>
+        <div class="rv-face rv-front">
+          <div class="rv-img" id="ov-img"></div>
+          <div class="rv-shade"></div>
+          <div class="rv-meta">
+            <div class="rv-rarity" id="ov-rarity"></div>
+            <div class="rv-name"><span class="rv-icon" id="ov-icon"></span><span id="ov-name"></span></div>
+            <div class="rv-desc" id="ov-desc"></div>
+          </div>
+        </div>
+      </div>
+      <div class="rv-actions">
+        <button class="rv-btn rv-keep" id="rv-keep" onclick="keepCard()">Забрать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ОБМЕН КАРТОЧЕК -->
+  <div class="exch-modal" id="exch-modal" onclick="if(event.target===this)closeExchange()">
+    <div class="exch-sheet">
+      <div class="exch-head">
+        <h2>Обмен</h2>
+        <button class="exch-x" onclick="closeExchange()" aria-label="Закрыть"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
+      <div id="exch-body">
+        <p class="exch-sub">Отдай карточки и получи личную награду от Ромы. Карточки списываются сразу и навсегда, звёзды не принимаются. Минимум — 100 ценности (около 5 карточек).</p>
+        <div class="exch-label">Что отдаёшь <span class="exch-hint">нажми на карточку, чтобы добавить</span></div>
+        <div id="exch-cards" class="exch-grid"></div>
+        <div class="exch-sum"><span>Отдаёшь: <b id="exch-n">0</b></span><span>Ценность: <b id="exch-val">0</b></span></div>
+        <div class="exch-label">Что получаешь</div>
+        <div id="exch-rewards" class="exch-rewards"></div>
+        <button class="exch-go" id="exch-go" onclick="submitExchange()" disabled>Обменять</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- GALLERY LIGHTBOX -->
+  <div class="gallery-lightbox" id="gallery-lightbox" onclick="if(event.target===this)closeLightbox()">
+    <div class="gallery-lb-box">
+      <button class="gallery-lb-close" onclick="closeLightbox()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+      <div class="gallery-lb-img" id="lb-img"></div>
+      <div class="gallery-lb-info">
+        <div class="dest-card-rarity" id="lb-rarity"></div>
+        <h3 class="gallery-lb-name" id="lb-name"></h3>
+        <p class="gallery-lb-desc" id="lb-desc"></p>
+      </div>
+      <div class="gallery-lb-nav">
+        <button class="coverflow-arrow" id="lb-prev" onclick="lbPrev()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="coverflow-arrow" id="lb-next" onclick="lbNext()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="app">
+
+    <!-- ═══════════════ ГЛАВНАЯ ═══════════════ -->
+    <section id="home" class="section active">
+
+      <div class="card showcase-card">
+        <div class="showcase-eyebrow">Alonso БОТ</div>
+
+        <div class="showcase-grid">
+
+          <!-- Левая колонка -->
+          <div class="showcase-left">
+            <h2 class="showcase-title">Взаимодействуй со стримом</h2>
+            <p class="showcase-desc">Задавай вопросы, предлагай идеи и участвуй в жизни канала — анонимно или с ником.</p>
+
+            <div class="showcase-chips">
+              <span class="showcase-chip">Вопросы</span>
+              <span class="showcase-chip">ЧБД — Что было дальше?</span>
+              <span class="showcase-chip">Идеи</span>
+            </div>
+
+            <div class="accordion">
+              <div class="accordion-item">
+                <button class="accordion-trigger">
+                  <span>Напиши вопрос</span>
+                  <svg class="acc-chevron" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="accordion-content"><div class="accordion-body">Выбери тип — анонимно или с ником, напиши вопрос и отправь. Алонсо ответит на стриме.</div></div>
+              </div>
+              <div class="accordion-item">
+                <button class="accordion-trigger">
+                  <span>Предложи идею или продолжи ЧБД</span>
+                  <svg class="acc-chevron" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="accordion-content"><div class="accordion-body">ЧБД — это «Что было дальше?». Рома рассказывает историю на стриме, а ты придумываешь продолжение. Идеи и пожелания для стримов — во вкладке «Идеи».</div></div>
+              </div>
+              <div class="accordion-item">
+                <button class="accordion-trigger">
+                  <span>Попади в топ участников</span>
+                  <svg class="acc-chevron" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="accordion-content"><div class="accordion-body">За каждую активность начисляются очки, а ещё — монеты для игры в карточки. Набирай ранги — от Новичка до Легенды.</div></div>
+              </div>
+            </div>
+
+            <div class="cta-row">
+              <button class="btn btn-primary" style="width:auto;flex:1" onclick="goToTab('interact','questions')">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                Задать вопрос
+              </button>
+              <button class="btn btn-secondary" style="width:auto;flex:1" onclick="goTo('top')">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+                Топ игроков
+              </button>
+            </div>
+          </div>
+
+          <!-- Правая колонка — медиа со стрелками -->
+          <div class="showcase-right">
+            <div class="media-card" id="media-card">
+              <div class="media-tab-panel active" data-panel="0">
+                <img src="photo_2026-09-18_20-27-23.jpg" alt="Стрим" loading="eager" />
+              </div>
+              <div class="media-tab-panel" data-panel="1">
+                <img src="photo_2026-09-18_20-27-26.jpg" alt="Фото 2" loading="lazy" />
+              </div>
+              <div class="media-tab-panel" data-panel="2">
+                <img src="photo_2026-09-18_20-27-30.jpg" alt="Фото 3" loading="lazy" />
+              </div>
+              <!-- Стрелка влево -->
+              <button class="media-arrow media-arrow-left" id="media-prev" aria-label="Назад">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <!-- Стрелка вправо -->
+              <button class="media-arrow media-arrow-right" id="media-next" aria-label="Вперёд">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+              <!-- Dot-индикаторы -->
+              <div class="media-dots">
+                <span class="media-dot active"></span>
+                <span class="media-dot"></span>
+                <span class="media-dot"></span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- До стрима -->
+      <div class="card">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+          До стрима
+        </div>
+        <p class="stream-subtitle" id="stream-info">Загрузка...</p>
+        <div class="countdown">
+          <div class="countdown-item">
+            <span class="countdown-num" id="cd-days">0</span>
+            <span class="countdown-label">дней</span>
+          </div>
+          <div class="countdown-item">
+            <span class="countdown-num" id="cd-hours">00</span>
+            <span class="countdown-label">часов</span>
+          </div>
+          <div class="countdown-item">
+            <span class="countdown-num" id="cd-mins">00</span>
+            <span class="countdown-label">минут</span>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="twitch-btn" onclick="openTwitch()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          Открыть Twitch
+        </button>
+      </div>
+
+      <!-- Быстрые действия -->
+      <div class="card">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Быстрые действия
+        </div>
+        <div class="quick-actions">
+          <button class="quick-btn" onclick="goToTab('interact','questions')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span>Вопрос</span>
+          </button>
+          <button class="quick-btn" onclick="goToTab('interact','chbd')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+            <span>ЧБД</span>
+          </button>
+          <button class="quick-btn" onclick="goToTab('interact','suggest')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><path d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12z"/><line x1="12" y1="22" x2="12" y2="18"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <span>Идея</span>
+          </button>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ═══════════════ ПРОФИЛЬ ═══════════════ -->
+    <section id="profile" class="section">
+      <div class="page-header">
+        <h1>Профиль</h1>
+      </div>
+
+      <div class="card" style="padding:22px 20px">
+        <div class="showcase-eyebrow">Твой аккаунт</div>
+        <div class="profile-header">
+          <div class="avatar" id="user-avatar">
+            <img id="avatar-img" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:50%;" />
+            <span id="avatar-letter">?</span>
+          </div>
+          <div class="profile-info">
+            <div class="profile-username" id="user-name">Загрузка...</div>
+            <div class="profile-rank" id="user-rank">—</div>
+          </div>
+          <span class="badge badge-secondary" id="user-score" style="margin-left:auto">0 очков</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <span class="stat-num" id="stat-questions">0</span>
+            <span class="stat-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              Вопросов
+            </span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-num" id="stat-proposals">0</span>
+            <span class="stat-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><circle cx="12" cy="12" r="6"/></svg>
+              Предложений
+            </span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-num" id="stat-chbd">0</span>
+            <span class="stat-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+              ЧБД
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+          Мой ранг
+        </div>
+        <div class="rank-info">
+          <span class="rank-current" id="rank-current">Новичок</span>
+          <span class="rank-next" id="rank-next"></span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+        <div class="progress-text" id="progress-text">0 / 50 действий до Легенды</div>
+        <div class="ranks-list" id="ranks-list"></div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ ВЗАИМОДЕЙСТВИЕ ═══════════════ -->
+    <section id="interact" class="section">
+      <div class="page-header">
+        <h1>Взаимодействие</h1>
+      </div>
+
+      <div class="card" style="padding:12px 14px">
+        <div class="tab-row" style="grid-template-columns:repeat(5,1fr)">
+          <button class="tab-btn active" data-tab="questions">Вопросы</button>
+          <button class="tab-btn" data-tab="chbd">ЧБД</button>
+          <button class="tab-btn" data-tab="trash">Треш</button>
+          <button class="tab-btn" data-tab="suggest">Идеи</button>
+          <button class="tab-btn" data-tab="media">Медиа</button>
+        </div>
+      </div>
+
+      <!-- ВОПРОСЫ -->
+      <div class="tab-content active" id="tab-questions">
+        <div class="card">
+          <div class="card-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Тип отправки
+          </div>
+          <div class="toggle-row">
+            <button class="toggle-btn active" data-type="anonymous">Анонимно</button>
+            <button class="toggle-btn" data-type="named">С ником</button>
+          </div>
+          <div class="field-label">Твой вопрос</div>
+          <textarea class="textarea" id="question-text" placeholder="Напиши свой вопрос..." data-count="true"></textarea>
+          <div class="char-count" id="question-count">0 симв.</div>
+          <button class="btn btn-primary" onclick="submitQuestion()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Отправить вопрос
+          </button>
+        </div>
+      </div>
+
+      <!-- ЧБД -->
+      <div class="tab-content" id="tab-chbd">
+        <div class="card">
+          <div class="card-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+            Что было дальше? (ЧБД)
+          </div>
+          <div class="chbd-off" id="chbd-status-info" style="display:none">ЧБД выключена</div>
+          <div id="chbd-form">
+            <p style="font-size:13px;color:var(--muted-fg);line-height:1.5;margin-bottom:14px">Рома рассказывает историю на стриме — придумай, что было дальше! Лучшее продолжение получает приз 🏆</p>
+            <div class="field-label">Твоё продолжение истории</div>
+            <textarea class="textarea" id="chbd-text" placeholder="Что было дальше?..." data-count="true"></textarea>
+            <div class="char-count" id="chbd-count">0 симв.</div>
+            <button class="btn btn-primary" onclick="submitStory()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Отправить продолжение
+          </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ТРЕШ ИСТОРИИ -->
+      <div class="tab-content" id="tab-trash">
+        <div class="card">
+          <div class="card-label">💩 Треш истории</div>
+          <div class="chbd-off" id="trash-status-info" style="display:none">Приём закрыт</div>
+          <div id="trash-form">
+            <p style="font-size:13px;color:var(--muted-fg);line-height:1.5;margin-bottom:14px">Напиши самую зашкварную историю из своей жизни 😈 Рома прочитает истории на стриме, выберет победителей и подарит им подарок 🎁</p>
+            <div class="field-label">Твоя история</div>
+            <textarea class="textarea" id="trash-text" placeholder="Расскажи как было..." data-count="true"></textarea>
+            <div class="char-count" id="trash-count">0 симв.</div>
+            <button class="btn btn-primary" onclick="submitTrash()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              Отправить историю
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- МЕДИА: голосовое / кружок / фото / видео -->
+      <div class="tab-content" id="tab-media">
+        <div class="card">
+          <div class="card-label">🎙 Голосовое, кружок, фото, видео</div>
+          <p style="font-size:13px;color:var(--muted-fg);line-height:1.5;margin-bottom:14px">Запиши голосовое или кружок, пришли фото или видео — всё это придёт Роме. Записать и отправить можно только в чате с ботом: нажми кнопку, и он откроется сразу в нужном режиме.</p>
+          <button class="btn btn-primary" onclick="openBotMedia()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+            Открыть чат с ботом
+          </button>
+        </div>
+      </div>
+
+      <!-- ИДЕИ -->
+      <div class="tab-content" id="tab-suggest">
+        <div class="card">
+          <div class="card-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><circle cx="12" cy="12" r="6"/></svg>
+            Предложение
+          </div>
+          <div class="field-label">Выбери категорию</div>
+          <div class="toggle-row idea-types">
+            <button class="toggle-btn active" data-idea-type="ideas">💡 Идея</button>
+            <button class="toggle-btn" data-idea-type="ads">📢 Реклама</button>
+            <button class="toggle-btn" data-idea-type="cooperation">🤝 Сотруд.</button>
+            <button class="toggle-btn" data-idea-type="other">📝 Иное</button>
+          </div>
+          <div class="field-label" style="margin-top:14px">Твоё предложение</div>
+          <textarea class="textarea" id="suggest-text" placeholder="Поделись идеей..." data-count="true"></textarea>
+          <div class="char-count" id="suggest-count">0 симв.</div>
+          <button class="btn btn-primary" onclick="submitIdea()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Отправить идею
+          </button>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ═══════════════ ТОП ═══════════════ -->
+    <section id="top" class="section">
+      <div class="page-header">
+        <h1>Топ участников</h1>
+        <span class="badge">10 мест</span>
+      </div>
+
+      <div class="card">
+        <div id="top-sort" class="top-sort">
+          <button class="top-sort-btn active" data-sort="score" onclick="loadTop('score')">Активность</button>
+          <button class="top-sort-btn" data-sort="cards" onclick="loadTop('cards')">🃏 Карточки</button>
+          <button class="top-sort-btn" data-sort="coins" onclick="loadTop('coins')">🪙 Монеты</button>
+          <button class="top-sort-btn" data-sort="stars" onclick="loadTop('stars')">⭐ Звёзды</button>
+        </div>
+        <div class="leaderboard" id="top-list">
+          <div class="lb-empty">Загрузка...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ АДМИН ═══════════════ -->
+    <section id="admin" class="section">
+      <div class="page-header">
+        <h1>Админ-панель</h1>
+        <span class="badge badge-admin">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Только для админа
+        </span>
+      </div>
+
+      <div class="card">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/></svg>
+          Управление
+        </div>
+        <div class="admin-grid">
+
+          <button class="admin-btn" onclick="adminAction('post')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+            <span>Рассылка</span>
+          </button>
+
+          <button class="admin-btn" id="chbd-toggle-btn" onclick="adminAction('chbd')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+            <span>ЧБД вкл/выкл</span>
+            <span class="admin-badge-on" id="chbd-badge">...</span>
+          </button>
+
+          <button class="admin-btn" id="trash-toggle-btn" onclick="adminAction('trash')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            <span>Треш вкл/выкл</span>
+            <span class="admin-badge-on" id="trash-badge">...</span>
+          </button>
+
+          <button class="admin-btn" onclick="adminAction('dm')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            <span>СМС юзеру</span>
+          </button>
+
+          <button class="admin-btn" onclick="adminAction('stats')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>Статистика</span>
+          </button>
+
+          <button class="admin-btn admin-btn-danger" onclick="adminAction('ban')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+            <span>Забанить</span>
+          </button>
+
+          <button class="admin-btn" onclick="adminAction('messages')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>Сообщения</span>
+          </button>
+
+          <button class="admin-btn admin-full" onclick="adminAction('streamtime')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span>Время стрима</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Время стрима -->
+      <div class="card admin-panel" id="panel-streamtime" style="display:none">
+        <div class="card-label">Время следующего стрима (МСК)</div>
+        <input class="admin-input" type="datetime-local" id="stream-time-input" />
+        <button class="btn btn-primary" style="margin-top:12px" onclick="adminSetStreamTime()">Задать время</button>
+        <button class="btn btn-secondary" style="margin-top:8px" onclick="adminClearStreamTime()">Вернуть по расписанию</button>
+      </div>
+
+      <!-- Рассылка -->
+      <div class="card admin-panel" id="panel-post" style="display:none">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+          Рассылка
+        </div>
+        <div class="field-label">Тип рассылки</div>
+        <div class="toggle-row" style="margin-bottom:14px">
+          <button class="toggle-btn active" data-broadcast-type="subscribers">Подписчикам</button>
+          <button class="toggle-btn" data-broadcast-type="all">Всем</button>
+        </div>
+        <div class="field-label">Текст поста</div>
+        <textarea class="textarea" id="broadcast-text" placeholder="Напиши текст поста..." data-count="true"></textarea>
+        <div class="char-count" id="broadcast-count">0 симв.</div>
+        <button class="btn btn-primary" onclick="adminBroadcast()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Отправить
+          </button>
+      </div>
+
+      <!-- СМС юзеру -->
+      <div class="card admin-panel" id="panel-dm" style="display:none">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+          Личное сообщение
+        </div>
+        <div class="field-label">ID пользователя</div>
+        <input class="admin-input" id="dm-userid" placeholder="123456789" inputmode="numeric" />
+        <div class="field-label" style="margin-top:12px">Сообщение</div>
+        <textarea class="textarea" id="dm-text" placeholder="Текст сообщения..." data-count="true"></textarea>
+        <div class="char-count" id="dm-count">0 симв.</div>
+        <button class="btn btn-primary" onclick="adminSms()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Отправить
+          </button>
+      </div>
+
+      <!-- ЧБД -->
+      <div class="card admin-panel" id="panel-chbd" style="display:none">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+          Управление ЧБД
+        </div>
+        <p style="color:var(--muted-fg);font-size:12px;margin-bottom:14px" id="chbd-admin-status">Загрузка...</p>
+      </div>
+
+      <!-- Бан -->
+      <div class="card admin-panel" id="panel-ban" style="display:none">
+        <div class="card-label" style="color:var(--danger)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Бан пользователя
+        </div>
+        <div class="field-label">ID пользователя</div>
+        <input class="admin-input" id="ban-userid" placeholder="123456789" inputmode="numeric" />
+        <button class="btn btn-danger" style="margin-top:14px" onclick="adminBan()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Забанить
+        </button>
+      </div>
+
+      <!-- Статистика -->
+      <div class="card admin-panel" id="panel-stats" style="display:none">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Статистика пользователя
+        </div>
+        <div class="field-label">ID пользователя</div>
+        <input class="admin-input" id="stats-userid" placeholder="123456789" inputmode="numeric" />
+        <button class="btn btn-primary" style="margin-top:14px" onclick="adminGetStats()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Получить статистику
+        </button>
+        <div class="admin-result" id="stats-result" style="display:none"></div>
+      </div>
+
+      <!-- Сообщения -->
+      <div class="card admin-panel" id="panel-messages" style="display:none">
+        <div class="card-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Просмотр сообщений
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <button class="btn btn-secondary" style="flex:1;font-size:12px" onclick="adminGetMessages('questions')">❓ Вопросы</button>
+          <button class="btn btn-secondary" style="flex:1;font-size:12px" onclick="adminGetMessages('stories')">🎬 ЧБД</button>
+          <button class="btn btn-secondary" style="flex:1;font-size:12px" onclick="adminGetMessages('proposals')">💡 Идеи</button>
+          <button class="btn btn-secondary" style="flex:1;font-size:12px" onclick="adminGetMessages('trash')">💩 Треш</button>
+        </div>
+        <div class="admin-result admin-msgs" id="messages-result" style="display:none"></div>
+      </div>
+
+    </section>
+
+    <!-- ═══════════════ AI ЧАТ ═══════════════ -->
+    <section id="ai" class="section">
+      <div class="page-header">
+        <h1>AI чат</h1>
+        <button class="ai-clear" id="ai-clear" type="button">Очистить</button>
+      </div>
+      <div class="ai-thread" id="ai-thread"></div>
+    </section>
+
+    <!-- ═══════════════ GAME ═══════════════ -->
+    <section id="game" class="section">
+
+      <!-- Хедер с балансом -->
+      <div class="page-header">
+        <h1>Карточки</h1>
+        <span class="badge badge-game">BETA</span>
+      </div>
+
+      <!-- Баланс — WebGL Neuro Noise фон -->
+      <div class="game-hero-neuro" id="game-hero-neuro">
+        <canvas id="neuro-canvas"></canvas>
+        <div class="game-hero-content">
+          <div class="game-hero-left">
+            <div class="game-balance-label">Моя коллекция</div>
+            <div class="game-balance" id="g-count">0</div>
+            <div class="game-balance-sub" id="g-count-sub">из 8 карточек</div>
+          </div>
+          <div class="game-hero-right">
+            <div class="game-coins" id="g-stars-display">
+              <span class="coin-ic" aria-hidden="true">🪙</span>
+              <span id="g-stars">0</span> монет
+            </div>
+            <div class="game-rank-badge" id="g-rank-badge">Новичок</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Таб-навигация игры -->
+      <div class="card" style="padding:12px 14px">
+        <div class="tab-row" style="grid-template-columns:repeat(5,1fr)">
+          <button class="tab-btn active" data-tab="g-open">Открыть</button>
+          <button class="tab-btn" data-tab="g-shop">Магазин</button>
+          <button class="tab-btn" data-tab="g-pvp">PvP</button>
+          <button class="tab-btn" data-tab="g-coll">Коллекция</button>
+          <button class="tab-btn" data-tab="g-friends">Друзья</button>
+        </div>
+      </div>
+
+      <!-- ══ ТАБ: ОТКРЫТЬ ══ -->
+      <div class="tab-content active" id="tab-g-open">
+        <div class="card daily-card" id="daily-card" style="display:none"></div>
+        <div class="card promo-card">
+          <div class="card-label">🎟 Промокод</div>
+          <div class="promo-row">
+            <input id="promo-input" class="admin-input" maxlength="40" placeholder="Введи код" autocomplete="off" autocapitalize="characters">
+            <button class="btn btn-primary" onclick="redeemPromo()">Применить</button>
+          </div>
+        </div>
+        <div class="portal-fullscreen" id="card-flip">
+          <iframe class="portal-iframe" title="Portal Field" sandbox="allow-scripts" loading="eager" id="portal-iframe"></iframe>
+          <div class="portal-fullscreen-inner">
+            <div class="portal-fullscreen-title">Открыть карточку</div>
+            <div class="portal-fullscreen-sub">Нажми, чтобы попытать удачу · или за ⭐ в «Магазине»</div>
+            <div class="card-back-price" style="margin-top:16px;padding:7px 20px;font-size:14px">
+              <span class="coin-ic" aria-hidden="true">🪙</span>
+              <span id="g-open-cost">20</span> монет · Баланс: <span id="g-stars-hint">0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ ТАБ: МАГАЗИН ══ -->
+      <div class="tab-content" id="tab-g-shop">
+
+        <div class="shop-hero">
+          <canvas id="shop-canvas"></canvas>
+          <div class="shop-hero-in">
+            <div>
+              <div class="shop-hero-label">Монеты</div>
+              <div class="shop-hero-bal"><span class="coin-ic" aria-hidden="true">🪙</span><span id="shop-balance">0</span></div>
+            </div>
+            <div class="shop-hero-note" id="shop-status">Паки — за звёзды Telegram ⭐</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">Купить карточки</div>
+          <p class="shop-p">Карточки за настоящие звёзды Telegram ⭐ — сразу и с гарантией редкости, чем больше пак, тем выгоднее. Монеты 🪙 игровые: их дают за ежедневный бонус, вопросы, идеи и ЧБД.</p>
+          <div class="pk-grid">
+            <div class="pk-item pk-common ">
+              <div class="pk-fan"><div class="pk-ph" data-card="viewer"></div><div class="pk-ph" data-card="happy"></div><div class="pk-ph" data-card="sleepy"></div></div>
+              <div class="pk-body">
+                <div class="pk-name" data-pack-name="common">Одна карточка</div>
+                <div class="pk-desc" data-pack-desc="common">1 карточка · любая редкость</div>
+                <button class="pk-buy" onclick="buyPack('common')"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> <span data-pack-price="common">5</span></button>
+              </div>
+            </div>
+            <div class="pk-item pk-rare ">
+              <div class="pk-fan"><div class="pk-ph" data-card="kind"></div><div class="pk-ph" data-card="sly"></div><div class="pk-ph" data-card="melon"></div></div>
+              <div class="pk-body">
+                <div class="pk-name" data-pack-name="rare">Редкий пак × 4</div>
+                <div class="pk-desc" data-pack-desc="rare">4 карточки · минимум 1 Rare+</div>
+                <button class="pk-buy" onclick="buyPack('rare')"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> <span data-pack-price="rare">49</span></button>
+              </div>
+            </div>
+            <div class="pk-item pk-mega pk-full">
+              <div class="pk-fan"><div class="pk-ph" data-card="evil"></div><div class="pk-ph" data-card="glam"></div><div class="pk-ph" data-card="boss"></div></div>
+              <div class="pk-body">
+                <div class="pk-name" data-pack-name="mega">Мега-пак × 11</div>
+                <div class="pk-desc" data-pack-desc="mega">11 карточек · минимум 1 Epic+ и 2 Rare+</div>
+                <button class="pk-buy" onclick="buyPack('mega')"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> <span data-pack-price="mega">199</span></button>
+              </div>
+            </div>
+            <div class="pk-item pk-legend ">
+              <div class="pk-fan"><div class="pk-ph" data-card="alonso"></div></div>
+              <div class="pk-body">
+                <div class="pk-name" data-pack-name="legend1">Легендарная карта</div>
+                <div class="pk-desc" data-pack-desc="legend1">1 гарантированная легендарная</div>
+                <button class="pk-buy" onclick="buyPack('legend1')"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> <span data-pack-price="legend1">599</span></button>
+              </div>
+            </div>
+            <div class="pk-item pk-legend ">
+              <div class="pk-fan"><div class="pk-ph" data-card="alonso"></div><div class="pk-ph" data-card="boss"></div></div>
+              <div class="pk-body">
+                <div class="pk-name" data-pack-name="legend2">Две легендарные</div>
+                <div class="pk-desc" data-pack-desc="legend2">2 разные легендарные</div>
+                <button class="pk-buy" onclick="buyPack('legend2')"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> <span data-pack-price="legend2">999</span></button>
+              </div>
+            </div>
+          </div>
+          <label class="stars-public-row" id="stars-public-row" style="display:none">
+            <input type="checkbox" id="stars-public-toggle" onchange="toggleStarsPublic()">
+            <span>Показывать, сколько звёзд я потратил, в глобальном топе</span>
+          </label>
+          <p class="shop-note" id="shop-note">Оплата проходит через звёзды Telegram ⭐ в окне Telegram.</p>
+        </div>
+      </div>
+
+      <!-- ══ ТАБ: PvP ══ -->
+      <div class="tab-content" id="tab-g-pvp">
+
+        <!-- Режимы PvP -->
+        <div class="card" style="padding:14px">
+          <div class="tab-row" style="grid-template-columns:1fr 1fr">
+            <button class="tab-btn active" data-pvp="random">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M21 3l-5 5"/><path d="M3 3l5 5"/><path d="M16 21h5v-5"/><path d="M21 21l-5-5"/><path d="M3 21l5-5"/><path d="M8 21H3v-5"/></svg>
+              Случайный
+            </button>
+            <button class="tab-btn" data-pvp="friend">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Вызов друга
+            </button>
+          </div>
+        </div>
+
+        <!-- Случайный соперник -->
+        <div id="pvp-random-panel">
+          <div class="card" id="pvp-select-card">
+            <div class="card-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              Дуэль — случайный соперник
+            </div>
+            <p style="font-size:13px;color:var(--muted-fg);margin-bottom:16px">Поставь карточку на кон. Арена выставит случайную карточку <strong>той же редкости</strong> — шансы 50/50. Выиграл — забираешь карточку соперника, проиграл — ставка пропадает.</p>
+            <div class="field-label">Выбери карточку для ставки</div>
+            <div id="pvp-card-select" class="pvp-card-list"></div>
+            <div class="pvp-stake-bar"><span>Ставка: <b id="pvp-stake-count">—</b></span><span>Дуэлей на сегодня: <b id="pvp-left">5</b></span></div>
+            <button class="btn btn-primary" style="margin-top:10px" onclick="startPvP()" id="pvp-start-btn" disabled>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Начать дуэль
+            </button>
+          </div>
+          <div class="card pvs-card" id="pvp-search-card" style="display:none">
+            <div class="pvs-state searching" id="pvs-state">
+              <div class="pvs-radar"><div class="pvs-ring r1"></div><div class="pvs-ring r2"></div><div class="pvs-ring r3"></div><div class="pvs-sweep"></div><i class="pvs-blip b1"></i><i class="pvs-blip b2"></i><i class="pvs-blip b3"></i><div class="pvs-core"></div></div>
+            </div>
+            <div class="pvs-title" id="pvs-title">Поиск соперника</div>
+            <div class="pvs-sub" id="pvs-sub"></div>
+            <div class="pvs-meta"><span id="pvs-timer">0:00</span><span class="pvs-dot"></span><span id="pvs-scan"></span></div>
+            <div class="pvs-vs">
+              <div class="pvs-player" id="pvs-my"></div>
+              <div class="pvs-vs-badge">VS</div>
+              <div class="pvs-player" id="pvs-found"></div>
+            </div>
+            <button class="btn btn-secondary" id="pvs-cancel" onclick="cancelSearch()">Отменить поиск</button>
+          </div>
+          <div class="card" id="pvp-result-card" style="display:none">
+            <div class="card-label">Результат дуэли</div>
+            <div class="pvp-result" id="pvp-result-inner"></div>
+          </div>
+        </div>
+
+        <!-- Вызов друга -->
+        <div id="pvp-friend-panel" style="display:none">
+          <div class="card">
+            <div class="card-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Вызов друга
+            </div>
+            <p style="font-size:13px;color:var(--muted-fg);margin-bottom:16px">Выбери карточку, создай вызов — получи ссылку и отправь другу. Друг увидит только редкость твоей карточки и должен поставить свою <strong>той же редкости</strong>. Победитель забирает обе.</p>
+            <div class="field-label">Выбери карточку для ставки</div>
+            <div id="pvp-friend-card-select" class="pvp-card-list"></div>
+            <button class="btn btn-primary" style="margin-top:14px" onclick="createChallenge()" id="pvp-challenge-btn" disabled>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Создать вызов
+            </button>
+          </div>
+
+          <!-- Сгенерированная ссылка -->
+          <div class="card" id="pvp-link-card" style="display:none">
+            <div class="card-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Ссылка на вызов
+            </div>
+            <div class="pvp-link-box">
+              <div class="pvp-link-text" id="pvp-link-text"></div>
+              <button class="pvp-link-copy" onclick="copyChallenge()" title="Скопировать">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </div>
+            <div class="pvp-link-share-row">
+              <button class="btn btn-primary" style="flex:1" onclick="shareChallenge()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22l-4-9-9-4 20-7z"/></svg>
+                Отправить в Telegram
+              </button>
+              <button class="btn btn-secondary" style="flex:1" onclick="copyChallenge()">
+                Скопировать
+              </button>
+            </div>
+            <p style="font-size:12px;color:var(--muted-fg);text-align:center;margin-top:10px">Ссылка активна 24 часа. Карточка заморожена до ответа.</p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ══ ТАБ: КОЛЛЕКЦИЯ ══ -->
+      <div class="tab-content" id="tab-g-coll">
+        <div class="card">
+          <div class="coll-header">
+            <div class="card-label" style="margin-bottom:0">Моя коллекция</div>
+            <div class="coll-view-switcher">
+              <button class="coll-view-btn" data-view="list" title="Список">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+              </button>
+              <button class="coll-view-btn" data-view="card" title="Карточки">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+              </button>
+              <button class="coll-view-btn active" data-view="pack" title="Карусель">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="6" height="12" rx="1"/><rect x="9" y="4" width="6" height="16" rx="1"/><rect x="16" y="6" width="6" height="12" rx="1"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="coll-container" id="coll-container" data-view="pack">
+            <!-- рендерится из JS -->
+          </div>
+        </div>
+
+        <!-- Обмен дубликатов на редкость выше -->
+        <div class="card">
+          <div class="card-label">🔄 Обмен дубликатов</div>
+          <p style="font-size:13px;color:var(--muted-fg);margin-bottom:12px;line-height:1.5">Отдай лишние копии (дубликаты) одной редкости — получи шанс на карточку редкостью выше. Единственную копию отдать нельзя. Не повезло — вернётся 1 карточка той же редкости.</p>
+          <div id="trade-list"></div>
+        </div>
+
+        <!-- Обмен карточек на награду от Ромы -->
+        <button class="exch-open" id="exch-open" onclick="openExchange()">
+          <canvas id="exch-canvas"></canvas>
+          <span class="exch-open-in">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+            Обменять на награду от Ромы
+          </span>
+        </button>
+
+        <!-- Конкурс -->
+        <div class="card game-reward-card" id="contest-card" style="margin-top:12px"></div>
+        <span id="reward-progress-text" style="display:none"></span><span id="reward-progress-bar" style="display:none"></span>
+
+      </div>
+
+      <!-- ══ ТАБ: ДРУЗЬЯ ══ -->
+      <div class="tab-content" id="tab-g-friends">
+        <div class="card">
+          <div class="showcase-eyebrow">Реферальная программа · <span id="fr-badge">0</span> друзей</div>
+          <div class="fr-title">Зови друзей — бонусы получаете оба</div>
+          <div class="fr-text" id="fr-rules">Загрузка...</div>
+          <div class="fr-link-box">
+            <input id="fr-link" class="fr-link" type="text" readonly value="" aria-label="Твоя ссылка">
+          </div>
+          <div class="fr-actions">
+            <button class="btn btn-primary" id="fr-share" type="button">Поделиться</button>
+            <button class="btn btn-secondary" id="fr-copy" type="button">Копировать</button>
+          </div>
+          <div class="fr-note">Бонус дают, только если друг ещё ни разу не заходил в игру «Карточки». Просто запустить бота можно — главное, не открывать игру до перехода по твоей ссылке.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">Награды за количество друзей</div>
+          <div id="fr-milestones" class="fr-miles"></div>
+          <div class="progress-bar"><div class="progress-fill" id="fr-progress" style="width:0%"></div></div>
+          <div class="progress-text" id="fr-progress-text"></div>
+        </div>
+
+        <div class="card" id="fr-by-card" style="display:none">
+          <div class="card-label">Кто тебя пригласил</div>
+          <div class="leaderboard" id="fr-by"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">Кого ты пригласил</div>
+          <div class="leaderboard" id="fr-list">
+            <div class="lb-empty">Загрузка...</div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+<div class="ai-dock"><form class="ai-bar" id="ai-bar" autocomplete="off">
+        <canvas id="ai-orb" width="56" height="56"></canvas>
+        <span class="ai-sep"></span>
+        <input id="ai-input" type="text" placeholder="Спроси что угодно" maxlength="800" enterkeyhint="send" aria-label="Сообщение">
+        <button class="ai-send" id="ai-send" type="submit" aria-label="Отправить" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+        </button>
+      </form></div>
+
+  <!-- Bottom nav — pill стиль -->
+  <nav class="bottom-nav">
+    <div class="nav-pill-inner">
+      <button class="nav-pill-btn active" data-section="home">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        Главная
+      </button>
+      <button class="nav-pill-btn" data-section="profile">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Профиль
+      </button>
+      <button class="nav-pill-btn" data-section="interact">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Вопросы
+      </button>
+      <button class="nav-pill-btn" data-section="top">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+        Топ
+      </button>
+      <button class="nav-pill-btn" data-section="ai">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.4L12 15l-1.9-4.6L5.5 9l4.6-1.4z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+        AI чат
+      </button>
+      <button class="nav-pill-btn nav-pill-game" data-section="game">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="13" height="16" rx="2.5"/><path d="M8 3h10a3 3 0 0 1 3 3v12"/></svg>
+        Игра
+      </button>
+      <button class="nav-pill-btn nav-pill-admin" data-section="admin" id="admin-nav-btn" style="display:none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Админ
+      </button>
+    </div>
+  </nav>
+
+  <script src="app.js?v=15"></script>
+  <script src="game.js?v=14"></script>
+</body>
+</html>
