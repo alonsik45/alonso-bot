@@ -200,7 +200,8 @@ STARS_DAILY_CAP = None
 # ---------- СТАРТОВЫЙ НАБОР · СТАТУС ДОНАТЕРА · ПОДАРКИ ДРУГУ (всё за ⭐) ----------
 # Стартовый набор: покупается ОДИН раз на аккаунт. Слот = «минимальная редкость», как в PACK_SLOTS.
 STARTER_PRICE = 250
-STARTER_SLOTS = ["uncommon", "uncommon", "uncommon", "rare", "rare"]   # 5 карточек: 3 минимум Uncommon + 2 минимум Rare
+# 10 карточек. Слот = (минимум, максимум): ровно 1 Epic, 5 Rare, 4 Uncommon-или-Rare; Legendary в наборе выпасть не может.
+STARTER_SLOTS = [("epic", "epic")] + [("rare", "rare")] * 5 + [("uncommon", "rare")] * 4
 STARTER_COINS = 120            # 🪙 в придачу к карточкам
 # «Экономия N%» — просто текст для описания (косметика), сама не считается. Поменять число можно тут.
 STARTER_SAVE_PCT = 50
@@ -541,7 +542,7 @@ def offer(code: str, g: dict = None) -> dict:
         if g is not None and g.get("starter_bought"):
             return {"ok": False, "error": "Стартовый набор можно купить только один раз — он у тебя уже есть 🙂"}
         return {"ok": True, "kind": "starter", "pack": "-", "price": STARTER_PRICE, "title": "Стартовый набор",
-                "desc": f"{STARTER_CARDS} карточек (3 минимум Uncommon и 2 минимум Rare) и {STARTER_COINS} монет. Экономия {STARTER_SAVE_PCT}%"}
+                "desc": f"{STARTER_CARDS} карточек (1 Epic, 5 Rare и 4 Uncommon или Rare) и {STARTER_COINS} монет. Экономия {STARTER_SAVE_PCT}%"}
     if code == "donor":
         return {"ok": True, "kind": "donor", "pack": "-", "price": DONOR_PRICE, "title": "Статус «Донатер» 💎",
                 "desc": (f"{DONOR_DAYS} дней: ежедневный бонус ×{DONOR_DAILY_MULT}, {DONOR_PVP_LIMIT} дуэлей в сутки, "
@@ -585,9 +586,10 @@ def _record_payment(g: dict, charge_id: str, price: int, label: str) -> bool:
 def _open_slots(g: dict, slots: list, distinct: bool = False):
     """Открывает пак по слотам (как grant_pack), кладёт в «ещё не показанные». → (карточки, новые?)"""
     got, new = [], []
-    for min_rarity in slots:
-        need = RARITY_ORDER.index(min_rarity)
-        pool = [c for c, r in CARDS.items() if RARITY_ORDER.index(r) >= need] or list(CARDS)
+    for slot in slots:
+        lo, hi = slot if isinstance(slot, tuple) else (slot, RARITY_ORDER[-1])   # слот: «минимум» или (минимум, максимум)
+        need, top = RARITY_ORDER.index(lo), RARITY_ORDER.index(hi)
+        pool = [c for c, r in CARDS.items() if need <= RARITY_ORDER.index(r) <= top] or list(CARDS)
         if distinct:
             pool = [c for c in pool if c not in got] or pool
         card = _pick(pool)
