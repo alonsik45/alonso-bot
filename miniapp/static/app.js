@@ -505,6 +505,15 @@ async function loadProfile() {
     const GOAL = 50; // 50 действий — статус «Легенда»
 
     document.getElementById('user-rank').textContent = status;
+
+    // статус «Донатер» 💎 (если куплен и ещё действует)
+    const donorUntil = Number(u.donor_until || (u.game && u.game.donor_until) || 0);
+    const donorEl = document.getElementById('user-donor');
+    if (donorEl) {
+      const on = donorUntil * 1000 > Date.now();
+      donorEl.style.display = on ? '' : 'none';
+      donorEl.textContent = on ? '💎 Донатер · до ' + new Date(donorUntil * 1000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) : '';
+    }
     document.getElementById('rank-current').textContent = status;
 
     const RANKS = [
