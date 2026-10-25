@@ -301,7 +301,7 @@ function renderOffers() {
       $id('starter-price').textContent = st.stars;
       $id('starter-old').textContent = st.value > st.stars ? st.value : '';
       $id('starter-save').textContent = '';
-      $id('starter-desc').textContent = st.cards + ' карточек (2 Мега-пака и 2 Редких) и ' + st.coins + ' 🪙 в подарок. Покупается один раз.' +
+      $id('starter-desc').textContent = st.cards + ' карточек (3 минимум Uncommon и 2 минимум Rare) и ' + st.coins + ' 🪙 в подарок. Покупается один раз.' +
         (st.save_pct > 0 ? ' Экономия ' + st.save_pct + '%' : '');
     }
   }
