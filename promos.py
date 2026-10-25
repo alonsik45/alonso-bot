@@ -21,6 +21,7 @@ PROMOS = {
     "ALONSOTIK":    {"cards": 1, "min_rarity": "uncommon", "coins": 80, "uses": 100, "until": None, "note": "TikTok"},
     "FCALONSO":  {"cards": 1, "min_rarity": "rare", "uses": 32, "until": None, "note": "редкий приз за активность"},
   "TWITCH22":    { "cards": 2, "min_rarity": "rare", "coins": 80, "uses": 11, "until": None, "note": "Твитч"},
+    "DONATERTG":    { "cards": 2, "min_rarity": "rare", "coins": 100, "uses": 6, "until": None, "note": "Донатеры"},
     # Конкретные легендарные карточки. Названия кодов поменяй на свои, чтобы их нельзя было угадать.
     "ALONSO20726":   {"card_ids": ["alonso"], "uses": 1, "until": None, "note": "легендарная карточка «Алонсо»"},
     "ROMANM": {"card_ids": ["boss"],   "uses": 1, "until": None, "note": "легендарная карточка «Рома-Босс»"},
