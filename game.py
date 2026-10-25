@@ -6,12 +6,15 @@
 дуэли), поэтому накрутить через консоль браузера нельзя.
 """
 import random
+import secrets
 import time
 import uuid
 
 try:
     from promos import PROMOS
 except Exception:   # файла нет или он сломан — игра работает без промокодов
+    import logging
+    logging.getLogger(__name__).exception("promos.py не загрузился — промокоды отключены")
     PROMOS = {}
 
 # ---------- карточки ----------
@@ -131,11 +134,11 @@ CATALOG = [
 ]
 
 # Шансы выпадения (чем больше число, тем чаще)
-DROP_WEIGHTS = {"common": 51.3, "uncommon": 28, "rare": 15, "epic": 5, "legendary": 0.7}   # легендарка была 2, теперь в 2,5 раза реже
+DROP_WEIGHTS = {"common": 50, "uncommon": 28, "rare": 15, "epic": 5, "legendary": 0.8}   # легендарка была 2, теперь в 2,5 раза реже
 
 # Дуэли ЧЕСТНЫЕ: сражаться можно только карточками одной редкости, шанс победы 50/50.
 # Так нельзя «перебить» чужую common своей epic (раньше это был почти 100% выигрыш).
-DUEL_WIN_CHANCE = 0.4
+DUEL_WIN_CHANCE = 0.5
 
 # Две валюты:
 #  • МОНЕТЫ 🪙 — игровые, зарабатываются активностью, тратятся на открытие обычной карточки;
@@ -193,6 +196,46 @@ PACKS = {
 PACK_DISTINCT = {"legend1", "legend2"}
 # Сколько звёзд один человек может потратить в сутки (по МСК). None — без лимита (сейчас лимита нет).
 STARS_DAILY_CAP = None
+
+# ---------- СТАРТОВЫЙ НАБОР · СТАТУС ДОНАТЕРА · ПОДАРКИ ДРУГУ (всё за ⭐) ----------
+# Стартовый набор: покупается ОДИН раз на аккаунт. Слот = «минимальная редкость», как в PACK_SLOTS.
+STARTER_PRICE = 250
+STARTER_PACKS = [("mega", 2), ("rare", 2)]   # из каких паков состоит набор: (ключ из PACKS, сколько штук)
+STARTER_COINS = 100            # 🪙 в придачу к карточкам
+# «Экономия N%» — просто текст для описания (косметика), сама не считается. Поменять число можно тут.
+STARTER_SAVE_PCT = 50
+STARTER_VALUE = 0              # зачёркнутая «старая цена» не показывается
+STARTER_CARDS = sum(len(PACK_SLOTS[k]) * n for k, n in STARTER_PACKS)
+
+# Статус «Донатер» 💎: действует DONOR_DAYS дней, повторная покупка ПРОДЛЕВАЕТ (дни складываются).
+DONOR_PRICE = 300
+DONOR_DAYS = 30
+DONOR_DAILY_MULT = 2           # ежедневный бонус монет ×2
+DONOR_PVP_LIMIT = 8            # дуэлей с ареной в сутки (у остальных — PVP_DAILY_LIMIT)
+DONOR_COIN_CAP = 80            # лимит монет за действия в сутки (у остальных — DAILY_COIN_CAP)
+
+# Подарок другу: покупатель платит ⭐ по цене обычного пака (любой из PACKS), получает ссылку
+# t.me/<бот>?start=gift_<id>. Друг открывает ссылку — пак зачисляется ему. Если друг так и не забрал,
+# через GIFT_SELF_CLAIM_DAYS дней покупатель может открыть этот пак сам (по той же ссылке).
+GIFT_SELF_CLAIM_DAYS = 7
+GIFT_PRICE_MULT = 3            # подарок-ПАК стоит в столько раз дороже того же пака для себя (1 = по цене пака)
+# Стартовый набор и статус «Донатер» тоже можно подарить — по своей обычной цене (250 / 300 ⭐).
+GIFT_EXTRA = {"starter": STARTER_PRICE, "donor": DONOR_PRICE}
+GIFT_EXTRA_TITLES = {"starter": "Стартовый набор", "donor": "Статус «Донатер» 💎"}
+
+
+def gift_price(pack: str) -> int:
+    if pack in GIFT_EXTRA:
+        return GIFT_EXTRA[pack]
+    return PACKS[pack][0] * GIFT_PRICE_MULT
+
+
+def gift_title(pack: str) -> str:
+    return GIFT_EXTRA_TITLES.get(pack) or PACKS[pack][2]
+
+
+def _gift_ok(pack) -> bool:
+    return pack in PACKS or pack in GIFT_EXTRA
 
 # КОНКУРС «Собери всю коллекцию». Всё, что видит игрок, берётся отсюда — правь тексты здесь.
 # Менял состав карточек или запускаешь новый сезон — увеличь version: у всех завершение сбросится.
@@ -300,6 +343,9 @@ def ensure(stats: dict) -> dict:
         g["reward_notified"] = False
     g.setdefault("show_stars", False)  # показывать ли потраченные звёзды в глобальном топе (по желанию игрока)
     g.setdefault("exchanges", [])      # заявки на обмен карточек на награды от Ромы
+    g.setdefault("starter_bought", False)   # куплен ли стартовый набор (один раз на аккаунт)
+    g.setdefault("donor_until", 0)     # до какого момента (unix) действует статус донатера
+    g.setdefault("gifts", [])          # купленные подарки друзьям: [{id, pack, ts, claimed_by}]
     _migrate_ids(g)
     return g
 
@@ -323,7 +369,7 @@ def award_for_action(stats: dict, stat_type: str) -> int:
     day = _today()
     if g["earned"]["day"] != day:
         g["earned"] = {"day": day, "n": 0}
-    room = DAILY_COIN_CAP - g["earned"]["n"]
+    room = coin_cap(g) - g["earned"]["n"]
     amount = max(0, min(amount, room))
     g["earned"]["n"] += amount
     g["coins"] += amount
@@ -355,13 +401,14 @@ def _remove(g: dict, card_id: str) -> bool:
 
 
 def daily_status(g: dict) -> dict:
-    """Состояние ежедневного бонуса: можно ли забрать, какая серия и сколько дадут."""
+    """Состояние ежедневного бонуса: можно ли забрать, какая серия и сколько дадут (у донатера ×DONOR_DAILY_MULT)."""
     d = g["daily"]
     n = len(DAILY_BONUS)
+    mult = DONOR_DAILY_MULT if is_donor(g) else 1
     if d["last"] == _today():
-        return {"available": False, "streak": d["streak"], "amount": DAILY_BONUS[d["streak"] % n]}
+        return {"available": False, "streak": d["streak"], "amount": DAILY_BONUS[d["streak"] % n] * mult}
     streak = d["streak"] if d["last"] == _yesterday() else 0
-    return {"available": True, "streak": streak, "amount": DAILY_BONUS[streak % n]}
+    return {"available": True, "streak": streak, "amount": DAILY_BONUS[streak % n] * mult}
 
 
 def claim_daily(g: dict) -> dict:
@@ -390,12 +437,22 @@ def view(g: dict) -> dict:
         "pvp_wins": g["pvp_wins"],
         "challenge": ({"id": ch["id"], "card": ch["card"]} if ch else None),
         "all_collected": all(c in g["cards"] for c in CARDS),
-        "pvp_left": max(0, PVP_DAILY_LIMIT - (g["pvp_day"]["n"] if g["pvp_day"]["day"] == _today() else 0)),
+        "pvp_left": max(0, pvp_limit(g) - (g["pvp_day"]["n"] if g["pvp_day"]["day"] == _today() else 0)),
         "exchange": {"values": EXCH_VALUE, "rewards": EXCH_REWARDS},
         # цены магазина берёт фронт отсюда — в index.html их дублировать больше не нужно
         "packs": {k: {"stars": v[0], "count": v[1], "title": v[2], "desc": v[3]} for k, v in PACKS.items()},
         "stars_cap": STARS_DAILY_CAP,
-        "daily_coin_cap": DAILY_COIN_CAP,
+        "daily_coin_cap": coin_cap(g),
+        "starter": {"stars": STARTER_PRICE, "available": not g.get("starter_bought"),
+                    "cards": STARTER_CARDS, "coins": STARTER_COINS,
+                    "value": STARTER_VALUE, "save_pct": STARTER_SAVE_PCT},
+        "gift_prices": {k: gift_price(k) for k in list(PACKS) + list(GIFT_EXTRA)},
+        "gift_items": [{"key": k, "title": gift_title(k), "stars": gift_price(k)} for k in list(PACKS) + list(GIFT_EXTRA)],
+        "donor": {"stars": DONOR_PRICE, "active": is_donor(g), "until": int(g.get("donor_until") or 0),
+                  "days": DONOR_DAYS, "daily_mult": DONOR_DAILY_MULT, "pvp_limit": DONOR_PVP_LIMIT,
+                  "coin_cap": DONOR_COIN_CAP, "base_pvp_limit": PVP_DAILY_LIMIT, "base_coin_cap": DAILY_COIN_CAP},
+        "gifts": gifts_view(g),
+        "gift_self_claim_days": GIFT_SELF_CLAIM_DAYS,
     }
 
 
@@ -456,6 +513,194 @@ def claim_unrevealed(g: dict) -> list:
     return packs
 
 
+# ---------- донатер · стартовый набор · подарки ----------
+
+def is_donor(g: dict) -> bool:
+    try:
+        return float(g.get("donor_until") or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
+
+
+def pvp_limit(g: dict) -> int:
+    return DONOR_PVP_LIMIT if is_donor(g) else PVP_DAILY_LIMIT
+
+
+def coin_cap(g: dict) -> int:
+    return DONOR_COIN_CAP if is_donor(g) else DAILY_COIN_CAP
+
+
+def offer(code: str, g: dict = None) -> dict:
+    """Что можно купить за ⭐. code: ключ из PACKS | 'starter' | 'donor' | 'gift:<ключ из PACKS>'.
+    Возвращает {ok, kind, pack, price, title, desc} (kind/pack идут в payload счёта) или {ok: False, error}."""
+    code = str(code or "")
+    if code in PACKS:
+        price, _n, title, desc = PACKS[code]
+        return {"ok": True, "kind": "pack", "pack": code, "price": price, "title": title, "desc": desc}
+    if code == "starter":
+        if g is not None and g.get("starter_bought"):
+            return {"ok": False, "error": "Стартовый набор можно купить только один раз — он у тебя уже есть 🙂"}
+        return {"ok": True, "kind": "starter", "pack": "-", "price": STARTER_PRICE, "title": "Стартовый набор",
+                "desc": f"{STARTER_CARDS} карточек (2 Мега-пака и 2 Редких) и {STARTER_COINS} монет. Экономия {STARTER_SAVE_PCT}%"}
+    if code == "donor":
+        return {"ok": True, "kind": "donor", "pack": "-", "price": DONOR_PRICE, "title": "Статус «Донатер» 💎",
+                "desc": (f"{DONOR_DAYS} дней: ежедневный бонус ×{DONOR_DAILY_MULT}, {DONOR_PVP_LIMIT} дуэлей в сутки, "
+                         f"больше монет за действия и значок 💎. Повторная покупка продлевает статус")}
+    if code.startswith("gift:") and _gift_ok(code[5:]):
+        pack = code[5:]
+        title = gift_title(pack)
+        return {"ok": True, "kind": "gift", "pack": pack, "price": gift_price(pack), "title": f"Подарок: {title}"[:32],
+                "desc": "Подарок другу. После оплаты получишь ссылку — друг откроет её и заберёт пак"}
+    return {"ok": False, "error": "Неизвестный товар"}
+
+
+def price_of(kind: str, pack: str):
+    """Цена по payload счёта (для проверки в pre_checkout). None — payload неверный."""
+    if kind == "pack" and pack in PACKS:
+        return PACKS[pack][0]
+    if kind == "starter":
+        return STARTER_PRICE
+    if kind == "donor":
+        return DONOR_PRICE
+    if kind == "gift" and _gift_ok(pack):
+        return gift_price(pack)
+    return None
+
+
+def _record_payment(g: dict, charge_id: str, price: int, label: str) -> bool:
+    """Записывает платёж в журнал. False — этот charge_id уже был зачислен."""
+    if charge_id in g["paid_ids"]:
+        return False
+    g["paid_ids"] = (g["paid_ids"] + [charge_id])[-200:]
+    g["stars_spent"] = g.get("stars_spent", 0) + price
+    if g["stars_day"]["day"] != _today():
+        g["stars_day"] = {"day": _today(), "n": 0}
+    g["stars_day"]["n"] += price
+    g["purchases"] = (g.get("purchases", []) + [
+        {"pack": label, "stars": price, "ts": int(time.time()), "charge": charge_id}
+    ])[-100:]
+    return True
+
+
+def _open_slots(g: dict, slots: list, distinct: bool = False):
+    """Открывает пак по слотам (как grant_pack), кладёт в «ещё не показанные». → (карточки, новые?)"""
+    got, new = [], []
+    for min_rarity in slots:
+        need = RARITY_ORDER.index(min_rarity)
+        pool = [c for c, r in CARDS.items() if RARITY_ORDER.index(r) >= need] or list(CARDS)
+        if distinct:
+            pool = [c for c in pool if c not in got] or pool
+        card = _pick(pool)
+        new.append(card not in g["cards"])
+        _add(g, card)
+        got.append(card)
+    g["unrevealed"].append({"cards": got, "new": new})
+    return got, new
+
+
+def grant_starter(g: dict, charge_id: str) -> dict:
+    if charge_id in g["paid_ids"]:
+        return {"ok": False, "error": "Этот платёж уже зачислен", "duplicate": True}
+    if g.get("starter_bought"):
+        return {"ok": False, "error": "Стартовый набор уже куплен"}
+    _record_payment(g, charge_id, STARTER_PRICE, "starter")
+    got, new = _give_starter(g)
+    return {"ok": True, "cards": got, "new": new, "coins": STARTER_COINS}
+
+
+def _give_starter(g: dict):
+    """Выдаёт содержимое стартового набора (карточки + монеты) и помечает набор купленным."""
+    g["starter_bought"] = True
+    g["coins"] += STARTER_COINS
+    got, new = [], []
+    for key, n in STARTER_PACKS:
+        for _ in range(n):
+            gg, nn = _open_slots(g, PACK_SLOTS[key], distinct=key in PACK_DISTINCT)
+            got += gg
+            new += nn
+    return got, new
+
+
+def _give_donor(g: dict) -> int:
+    base = max(time.time(), float(g.get("donor_until") or 0))   # продлеваем от конца текущего срока
+    g["donor_until"] = base + DONOR_DAYS * 86400
+    return int(g["donor_until"])
+
+
+def grant_donor(g: dict, charge_id: str) -> dict:
+    if not _record_payment(g, charge_id, DONOR_PRICE, "donor"):
+        return {"ok": False, "error": "Этот платёж уже зачислен", "duplicate": True}
+    return {"ok": True, "until": _give_donor(g)}
+
+
+def grant_gift_purchase(g: dict, pack: str, charge_id: str) -> dict:
+    """Покупатель оплатил подарок: создаём запись с id для ссылки. Подарок получит тот, кто откроет ссылку."""
+    if not _gift_ok(pack):
+        return {"ok": False, "error": "Неизвестный пак"}
+    if not _record_payment(g, charge_id, gift_price(pack), "gift:" + pack):
+        return {"ok": False, "error": "Этот платёж уже зачислен", "duplicate": True}
+    gid = secrets.token_hex(5)
+    gifts = g.get("gifts", []) + [{"id": gid, "pack": pack, "ts": int(time.time()), "claimed_by": None}]
+    if len(gifts) > 60:   # старые уже забранные подарки чистим, неотправленные — никогда
+        done = [x for x in gifts if x.get("claimed_by")]
+        drop = {id(x) for x in done[:len(gifts) - 60]}
+        gifts = [x for x in gifts if id(x) not in drop]
+    g["gifts"] = gifts
+    return {"ok": True, "id": gid, "pack": pack}
+
+
+def gifts_view(g: dict) -> list:
+    """Неотправленные подарки покупателя (чтобы ссылку можно было достать из магазина снова)."""
+    out = []
+    for x in reversed(g.get("gifts", [])):
+        if x.get("claimed_by") or not _gift_ok(x.get("pack")):
+            continue
+        left = max(0, int((x["ts"] + GIFT_SELF_CLAIM_DAYS * 86400 - time.time()) // 86400) + 1)
+        out.append({"id": x["id"], "pack": x["pack"], "title": gift_title(x["pack"]), "self_claim_days": left})
+        if len(out) >= 10:
+            break
+    return out
+
+
+def find_gift(user_stats: dict, gid: str):
+    """Ищет подарок по id среди всех игроков. → (id покупателя, его game, подарок) или (None, None, None)."""
+    gid = str(gid or "")
+    if not gid:
+        return None, None, None
+    for uid, st in user_stats.items():
+        g = st.get("game") or {}
+        for x in g.get("gifts") or []:
+            if x.get("id") == gid:
+                return uid, g, x
+    return None, None, None
+
+
+def gift_selfclaim_wait(gift: dict) -> float:
+    """Сколько секунд осталось, пока покупатель не сможет забрать свой подарок себе."""
+    return max(0.0, gift["ts"] + GIFT_SELF_CLAIM_DAYS * 86400 - time.time())
+
+
+def claim_gift(gift: dict, claimer_g: dict, claimer_uid: str) -> dict:
+    """Открывает подаренный пак получателю. Подарок одноразовый."""
+    if gift.get("claimed_by") or not _gift_ok(gift.get("pack")):
+        return {"ok": False, "error": "Подарок уже забрали"}
+    pack = gift["pack"]
+    extra = {}
+    if pack == "starter":
+        if claimer_g.get("starter_bought"):
+            return {"ok": False, "error": "У тебя уже есть стартовый набор 🙂 Этот подарок можно отправить другому другу."}
+        got, new = _give_starter(claimer_g)
+        extra["coins"] = STARTER_COINS
+    elif pack == "donor":
+        got, new = [], []
+        extra["until"] = _give_donor(claimer_g)
+    else:
+        got, new = _open_slots(claimer_g, PACK_SLOTS[pack], distinct=pack in PACK_DISTINCT)
+    gift["claimed_by"] = str(claimer_uid)
+    gift["claimed_ts"] = int(time.time())
+    return {"ok": True, "cards": got, "new": new, "pack": pack, "title": gift_title(pack), **extra}
+
+
 def _duel_win() -> bool:
     """Дуэль честная: карточки одной редкости, шанс DUEL_WIN_CHANCE."""
     return random.random() < DUEL_WIN_CHANCE
@@ -471,8 +716,9 @@ def pvp_random(g: dict, card_id: str) -> dict:
     day = _today()
     if g["pvp_day"]["day"] != day:
         g["pvp_day"] = {"day": day, "n": 0}
-    if g["pvp_day"]["n"] >= PVP_DAILY_LIMIT:
-        return {"ok": False, "error": f"Лимит дуэлей с ареной на сегодня исчерпан ({PVP_DAILY_LIMIT}). Вызови друга или возвращайся завтра"}
+    limit = pvp_limit(g)
+    if g["pvp_day"]["n"] >= limit:
+        return {"ok": False, "error": f"Лимит дуэлей с ареной на сегодня исчерпан ({limit}). Вызови друга или возвращайся завтра"}
     g["pvp_day"]["n"] += 1
     same = [c for c, r in CARDS.items() if r == CARDS[card_id]]
     opp = random.choice(same)
