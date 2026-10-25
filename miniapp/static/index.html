@@ -235,6 +235,7 @@
           <div class="profile-info">
             <div class="profile-username" id="user-name">Загрузка...</div>
             <div class="profile-rank" id="user-rank">—</div>
+            <div id="user-donor" style="display:none;font-size:12px;font-weight:700;color:#67e8f9;margin-top:2px"></div>
           </div>
           <span class="badge badge-secondary" id="user-score" style="margin-left:auto">0 очков</span>
         </div>
@@ -658,6 +659,23 @@
           </div>
         </div>
 
+        <!-- Стартовый набор (виден, пока не куплен) -->
+        <div class="card offer-card offer-starter" id="starter-card" style="display:none">
+          <span class="offer-tag">🚀 Один раз на аккаунт</span><span class="offer-save" id="starter-save"></span>
+          <div class="offer-title">Стартовый набор</div>
+          <p class="offer-desc" id="starter-desc">2 Мега-пака, 2 Редких пака и 100 🪙 в подарок. Экономия 50%</p>
+          <button class="pk-buy offer-buy" onclick="buyPack('starter')">⭐ <s class="offer-old" id="starter-old"></s><span id="starter-price">250</span> · Купить</button>
+        </div>
+
+        <!-- Статус «Донатер» -->
+        <div class="card offer-card offer-donor" id="donor-card" style="display:none">
+          <span class="offer-tag">💎 Подписка на бонусы</span>
+          <div class="offer-title">Статус «Донатер»</div>
+          <ul class="offer-perks" id="donor-perks"></ul>
+          <div class="offer-status" id="donor-status"></div>
+          <button class="pk-buy offer-buy" onclick="buyPack('donor')">⭐ <span id="donor-price">300</span> · <span id="donor-buy-label">Стать донатером</span></button>
+        </div>
+
         <div class="card">
           <div class="card-label">Купить карточки</div>
           <p class="shop-p">Карточки за настоящие звёзды Telegram ⭐ — сразу и с гарантией редкости, чем больше пак, тем выгоднее. Монеты 🪙 игровые: их дают за ежедневный бонус, вопросы, идеи и ЧБД.</p>
@@ -702,6 +720,15 @@
                 <button class="pk-buy" onclick="buyPack('legend2')"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> <span data-pack-price="legend2">999</span></button>
               </div>
             </div>
+          </div>
+          <div class="gift-box">
+            <div class="card-label">🎁 Подарить другу</div>
+            <p class="shop-p">Выбери пак, стартовый набор или статус «Донатер» — после оплаты получишь ссылку. Друг откроет её в боте и заберёт подарок.</p>
+            <div class="gift-row">
+              <select id="gift-select" class="admin-input"></select>
+              <button class="pk-buy" onclick="buyGift()">Подарить</button>
+            </div>
+            <div id="gift-list"></div>
           </div>
           <label class="stars-public-row" id="stars-public-row" style="display:none">
             <input type="checkbox" id="stars-public-toggle" onchange="toggleStarsPublic()">
