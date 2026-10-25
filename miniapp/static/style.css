@@ -2890,3 +2890,31 @@ body.ai-open .ai-dock{display:block}
 /* ═══ Паки с легендарными картами ═══ */
 .pk-legend{--pk:#f59e0b;border-color:rgba(251,191,36,.45)}
 .pk-legend .pk-buy{background:linear-gradient(135deg,#f59e0b,#fbbf24);color:#1c1003}
+
+
+/* ── Магазин: стартовый набор, донатер, подарки ── */
+.offer-card{position:relative;overflow:hidden;border:1px solid rgba(255,255,255,.1);margin-bottom:12px}
+.offer-card::before{content:"";position:absolute;inset:0;background:radial-gradient(120% 120% at 0% 0%,var(--of,#7c3aed) 0%,transparent 60%);opacity:.35;pointer-events:none}
+.offer-card>*{position:relative}
+.offer-starter{--of:#22c55e}
+.offer-donor{--of:#06b6d4}
+.offer-tag{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.04em;padding:3px 10px;border-radius:99px;background:rgba(255,255,255,.12);color:#fff;margin-bottom:8px}
+.offer-title{font-size:17px;font-weight:800;color:#fff;margin-bottom:6px}
+.offer-desc{font-size:13px;color:rgba(255,255,255,.72);margin:0 0 12px;line-height:1.45}
+.offer-perks{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:6px;font-size:13px;color:rgba(255,255,255,.88)}
+.offer-perks li::before{content:"✓";color:#4ade80;font-weight:800;margin-right:8px}
+.offer-status{font-size:12px;font-weight:700;color:#67e8f9;margin-bottom:10px}
+.offer-status:empty{display:none}
+.offer-buy{width:100%}
+.gift-box{margin-top:18px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08)}
+.gift-row{display:flex;gap:10px;align-items:stretch}
+.gift-row select{flex:1;min-width:0}
+.gift-row .pk-buy{flex:0 0 auto;padding:0 18px}
+.gift-item{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.05);font-size:13px;color:#fff}
+.gift-item small{display:block;color:var(--muted-fg);font-size:11px;margin-top:2px}
+.gift-actions{display:flex;gap:6px;flex:0 0 auto}
+.gift-actions button{height:34px;padding:0 12px;border-radius:10px;border:none;font:700 12px var(--font);cursor:pointer;background:#fff;color:#09090b}
+.gift-actions button.ghost{background:rgba(255,255,255,.14);color:#fff}
+.offer-save{display:inline-block;margin-left:8px;font-size:11px;font-weight:800;padding:3px 10px;border-radius:99px;background:#16a34a;color:#fff;vertical-align:top}
+.offer-save:empty{display:none}
+.offer-old{opacity:.55;font-weight:600;margin-right:6px}
