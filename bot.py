@@ -571,6 +571,7 @@ def get_top_users(limit=10, sort="score"):
             "cards_total": sum(cards.values()),
             "coins": g.get("coins", 0) if isinstance(g.get("coins", 0), int) else 0,
             "stars": g.get("stars_spent", 0) if g.get("show_stars") else None,
+            "donor": cardgame.is_donor(g),
         })
 
     keys = {
@@ -604,6 +605,9 @@ def _user_stats_view(user_id: int) -> dict:
         view["other_proposals"] + view["story"]
     )
     view["rank"] = view.get("status")
+    _g = view.get("game") or {}
+    view["donor_until"] = int(float(_g.get("donor_until") or 0))
+    view["donor"] = cardgame.is_donor(_g)
     return view
 
 # ============================================================
@@ -752,7 +756,8 @@ async def _save_stats_snapshot(critical: bool = False) -> bool:
 
 def _display_name(uid_str: str) -> str:
     st = user_stats.get(uid_str, {})
-    return f"@{st['username']}" if st.get("username") else f"ID:{uid_str}"
+    name = f"@{st['username']}" if st.get("username") else f"ID:{uid_str}"
+    return name + (" 💎" if cardgame.is_donor(st.get("game") or {}) else "")
 
 
 def _friend_label(uid_str: str) -> str:
@@ -772,6 +777,60 @@ async def friends_for_api(user: dict) -> dict:
     if user.get("username"):
         user_stats[str(uid)]["username"] = user["username"]
     return referrals.friends_view(user_stats, str(uid), application.bot.username, _friend_label)
+
+
+async def handle_gift_start(update: Update, context: ContextTypes.DEFAULT_TYPE, gid: str) -> bool:
+    """Ссылка t.me/<бот>?start=gift_<ID>: подарок другу, купленный за ⭐. True — ответили полностью (меню не нужно)."""
+    user = update.effective_user
+    if user.id in banned_users:
+        return False
+    if not re.fullmatch(r"[0-9a-f]{6,16}", gid or ""):
+        await update.message.reply_text("Этот подарок недействителен 🙈 Проверь ссылку.")
+        return False
+    owner_uid, _owner_g, gift = cardgame.find_gift(user_stats, gid)
+    if not gift or gift.get("claimed_by"):
+        await update.message.reply_text("Этот подарок уже забрали или ссылка недействительна 🙈")
+        return False
+    open_game = InlineKeyboardMarkup([[InlineKeyboardButton("🎴 Открыть игру", web_app=WebAppInfo(url=MINIAPP_URL))]])
+    is_owner = owner_uid == str(user.id)
+    if is_owner:
+        wait = cardgame.gift_selfclaim_wait(gift)
+        if wait > 0:
+            days = int(wait // 86400) + 1
+            await update.message.reply_text(
+                "🎁 Это твой подарок: отправь ссылку другу — открыть её сможет только он.\n\n"
+                f"Если друг не заберёт подарок, через {days} дн. ты сможешь открыть его сам по этой же ссылке.")
+            return True
+
+    init_user_stats(user.id)
+    if user.username:
+        user_stats[str(user.id)]["username"] = user.username
+    g = cardgame.ensure(user_stats[str(user.id)])
+    res = cardgame.claim_gift(gift, g, str(user.id))
+    if not res["ok"]:
+        await update.message.reply_text(res.get("error") or "Этот подарок уже забрали 🙈")
+        return False
+    await _save_stats_snapshot(critical=True)
+
+    if res.get("pack") == "donor":
+        tail = "Статус «Донатер» 💎 уже активен — открой игру 👇"
+    elif res.get("pack") == "starter":
+        tail = "Карточки и монеты уже у тебя — открой игру и посмотри, что выпало 👇"
+    else:
+        tail = "Карточки уже в твоей коллекции — открой игру и посмотри, что выпало 👇"
+    if is_owner:
+        text = f"🎁 Ты открыл свой неотправленный подарок «{res['title']}». {tail}"
+    else:
+        text = f"🎁 {_display_name(owner_uid)} дарит тебе «{res['title']}»!\n\n{tail}"
+    await update.message.reply_text(text, reply_markup=open_game)
+    if not is_owner:
+        try:
+            await application.bot.send_message(
+                chat_id=int(owner_uid),
+                text=f"🎉 {_display_name(str(user.id))} забрал(а) твой подарок «{res['title']}»!")
+        except Exception:
+            logger.exception("Не удалось уведомить дарителя")
+    return True
 
 
 async def handle_referral_start(context, user, inviter_id: str):
@@ -852,29 +911,28 @@ async def game_action_for_api(user: dict, action: str, payload: dict) -> dict:
         result = {"ok": True}
 
     elif action == "pack_invoice":
-        pack = str(payload.get("pack", ""))
-        if pack not in cardgame.PACKS:
-            result = {"ok": False, "error": "Неизвестный пак"}
+        # pack: ключ пака ('rare'...) | 'starter' | 'donor' | 'gift:<ключ пака>'
+        offer = cardgame.offer(str(payload.get("pack", "")), g)
+        if not offer["ok"]:
+            result = {"ok": False, "error": offer["error"]}
+        elif not cardgame.stars_room(g, offer["price"]):
+            result = {"ok": False, "error": (
+                f"Дневной лимит покупок за ⭐ — {cardgame.STARS_DAILY_CAP} ⭐. "
+                "Он обновится в 00:00 МСК. Пока можно открывать карточки за монеты 🪙")}
         else:
-            price, _count, title, desc = cardgame.PACKS[pack]
-            if not cardgame.stars_room(g, price):
-                result = {"ok": False, "error": (
-                    f"Дневной лимит покупок за ⭐ — {cardgame.STARS_DAILY_CAP} ⭐. "
-                    "Он обновится в 00:00 МСК. Пока можно открывать карточки за монеты 🪙")}
-            else:
-                try:
-                    url = await application.bot.create_invoice_link(
-                        title=title,
-                        description=desc,
-                        payload=f"pack|{pack}|{uid}",
-                        provider_token="",          # для звёзд Telegram (XTR) провайдер не нужен
-                        currency="XTR",
-                        prices=[LabeledPrice(title, price)],
-                    )
-                    result = {"ok": True, "url": url}
-                except Exception:
-                    logger.exception("Не удалось создать счёт на оплату звёздами")
-                    result = {"ok": False, "error": "Не удалось создать счёт. Попробуй позже"}
+            try:
+                url = await application.bot.create_invoice_link(
+                    title=offer["title"],
+                    description=offer["desc"],
+                    payload=f"{offer['kind']}|{offer['pack']}|{uid}",
+                    provider_token="",          # для звёзд Telegram (XTR) провайдер не нужен
+                    currency="XTR",
+                    prices=[LabeledPrice(offer["title"], offer["price"])],
+                )
+                result = {"ok": True, "url": url}
+            except Exception:
+                logger.exception("Не удалось создать счёт на оплату звёздами")
+                result = {"ok": False, "error": "Не удалось создать счёт. Попробуй позже"}
 
     elif action == "trade":
         result = cardgame.trade(g, str(payload.get("rarity", "")))
@@ -982,6 +1040,7 @@ async def game_action_for_api(user: dict, action: str, payload: dict) -> dict:
         await _save_stats_snapshot()
 
     result["state"] = cardgame.view(g)
+    result["state"]["bot_username"] = application.bot.username
     return result
 
 
@@ -1481,6 +1540,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await update.message.reply_text("Этот вызов уже недействителен 🙈 Возможно, его приняли или он истёк.")
         # дальше показываем обычное меню
+
+    # Подарок от друга: t.me/<бот>?start=gift_<ID>
+    if context.args and context.args[0].startswith("gift_") and update.effective_chat.type == "private":
+        if await handle_gift_start(update, context, context.args[0][5:]):
+            return
 
     if user.username:
         username = f"@{user.username}"
@@ -3528,79 +3592,122 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ОПЛАТА ПАКОВ ЗВЁЗДАМИ TELEGRAM (XTR)
 # ============================================================
 
-def _parse_pack_payload(payload: str):
-    """'pack|<тип>|<user_id>' -> (тип, user_id) или (None, None)."""
+def _parse_pay_payload(payload: str):
+    """'<тип>|<пак>|<user_id>' -> (тип, пак, user_id) или (None, None, None).
+    Типы: pack — обычный пак, starter — стартовый набор, donor — статус донатера, gift — подарок другу."""
     try:
         kind, pack, uid = payload.split("|")
-        if kind == "pack" and pack in cardgame.PACKS:
-            return pack, int(uid)
+        uid = int(uid)
+        if cardgame.price_of(kind, pack) is not None:
+            return kind, pack, uid
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
 async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Telegram спрашивает «можно ли провести платёж?» — отвечать нужно за 10 секунд."""
     q = update.pre_checkout_query
-    pack, uid = _parse_pack_payload(q.invoice_payload)
+    kind, pack, uid = _parse_pay_payload(q.invoice_payload)
     ok = (
-        pack is not None
+        kind is not None
         and uid == q.from_user.id
         and q.currency == "XTR"
-        and q.total_amount == cardgame.PACKS[pack][0]
+        and q.total_amount == cardgame.price_of(kind, pack)
         and q.from_user.id not in banned_users
-        and (str(q.from_user.id) not in user_stats
-             or cardgame.stars_room(cardgame.ensure(user_stats[str(q.from_user.id)]), q.total_amount))
     )
+    st = user_stats.get(str(q.from_user.id))
+    if ok and st is not None:
+        g = cardgame.ensure(st)
+        ok = cardgame.stars_room(g, q.total_amount) and not (kind == "starter" and g.get("starter_bought"))
     await q.answer(ok=ok, error_message=None if ok else "Не удалось провести платёж. Попробуй ещё раз.")
 
 
+async def _refund_payment(update, context, user, sp, why: str):
+    """Платёж прошёл, а выдать нечего: возвращаем звёзды и пишем админам."""
+    refunded = False
+    try:
+        refunded = await context.bot.refund_star_payment(
+            user_id=user.id, telegram_payment_charge_id=sp.telegram_payment_charge_id)
+    except Exception:
+        logger.exception("Не удалось вернуть звёзды автоматически")
+    await _notify_admins(
+        f"⚠️ ПЛАТЁЖ БЕЗ ТОВАРА ({why})\n\n👤 {_display_name(str(user.id))}\n🆔 ID: {user.id}\n"
+        f"Сумма: {sp.total_amount} ⭐\nPayload: {sp.invoice_payload!r}\n"
+        f"ID платежа: {sp.telegram_payment_charge_id}\n"
+        + ("Звёзды автоматически возвращены." if refunded else "Нужен ручной возврат."))
+    await update.message.reply_text("Что-то пошло не так с оплатой. Мы уже разбираемся и вернём звёзды 🙏")
+
+
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Платёж прошёл — выдаём пак."""
+    """Платёж прошёл — выдаём пак / стартовый набор / статус / подарок."""
     sp = update.message.successful_payment
     user = update.effective_user
-    pack, uid = _parse_pack_payload(sp.invoice_payload)
-    if pack is None or uid != user.id:
+    kind, pack, uid = _parse_pay_payload(sp.invoice_payload)
+    if kind is None or uid != user.id:
         logger.error(f"Платёж с неверным payload: {sp.invoice_payload!r} от {user.id}")
-        refunded = False
-        try:
-            refunded = await context.bot.refund_star_payment(
-                user_id=user.id, telegram_payment_charge_id=sp.telegram_payment_charge_id)
-        except Exception:
-            logger.exception("Не удалось вернуть звёзды автоматически")
-        await _notify_admins(
-            f"⚠️ ПЛАТЁЖ БЕЗ ПАКА\n\n👤 {_display_name(str(user.id))}\n🆔 ID: {user.id}\n"
-            f"Сумма: {sp.total_amount} ⭐\nPayload: {sp.invoice_payload!r}\n"
-            f"ID платежа: {sp.telegram_payment_charge_id}\n"
-            + ("Звёзды автоматически возвращены." if refunded else "Нужен ручной возврат."))
-        await update.message.reply_text("Что-то пошло не так с оплатой. Мы уже разбираемся и вернём звёзды 🙏")
+        await _refund_payment(update, context, user, sp, "неверный payload")
         return
 
     init_user_stats(user.id)
     if user.username:
         user_stats[str(user.id)]["username"] = user.username
     g = cardgame.ensure(user_stats[str(user.id)])
-    result = cardgame.grant_pack(g, pack, sp.telegram_payment_charge_id)
+    charge = sp.telegram_payment_charge_id
+    if kind == "pack":
+        result = cardgame.grant_pack(g, pack, charge)
+    elif kind == "starter":
+        result = cardgame.grant_starter(g, charge)
+    elif kind == "donor":
+        result = cardgame.grant_donor(g, charge)
+    else:
+        result = cardgame.grant_gift_purchase(g, pack, charge)
     if not result["ok"]:
-        return  # повторное уведомление об уже зачисленном платеже
+        if result.get("duplicate"):
+            return  # повторное уведомление об уже зачисленном платеже
+        await _refund_payment(update, context, user, sp, result.get("error", "не удалось выдать"))
+        return
 
     await _save_stats_snapshot(critical=True)
-    names = ", ".join(cardgame.NAMES[c] for c in result["cards"])
-    await update.message.reply_text(
-        f"✅ Оплата получена! Пак «{cardgame.PACKS[pack][2]}» открыт: {names}.\n"
-        "Загляни в «Игра → Коллекция» в приложении 🎴"
-    )
 
-    admin_text = (
-        f"💰 ПОКУПКА ПАКА\n\n👤 {_display_name(str(user.id))}\n🆔 ID: {user.id}\n"
-        f"Пак: {cardgame.PACKS[pack][2]} — {cardgame.PACKS[pack][0]} ⭐\n"
-        f"ID платежа (нужен для возврата): {sp.telegram_payment_charge_id}"
+    if kind == "pack":
+        names = ", ".join(cardgame.NAMES[c] for c in result["cards"])
+        await update.message.reply_text(
+            f"✅ Оплата получена! Пак «{cardgame.PACKS[pack][2]}» открыт: {names}.\n"
+            "Загляни в «Игра → Коллекция» в приложении 🎴")
+        what = f"Пак: {cardgame.PACKS[pack][2]} — {cardgame.PACKS[pack][0]} ⭐"
+    elif kind == "starter":
+        await update.message.reply_text(
+            f"🚀 Стартовый набор получен! {len(result['cards'])} карточек и +{result['coins']} 🪙.\n"
+            "Загляни в «Игра → Коллекция» в приложении 🎴")
+        what = f"Стартовый набор — {cardgame.STARTER_PRICE} ⭐"
+    elif kind == "donor":
+        until = time.strftime("%d.%m.%Y", time.gmtime(result["until"] + 3 * 3600))
+        await update.message.reply_text(
+            f"💎 Ты теперь Донатер — статус действует до {until}!\n\n"
+            f"• ежедневный бонус ×{cardgame.DONOR_DAILY_MULT}\n"
+            f"• {cardgame.DONOR_PVP_LIMIT} дуэлей с ареной в сутки\n"
+            f"• до {cardgame.DONOR_COIN_CAP} 🪙 в сутки за действия\n"
+            "• значок 💎 рядом с ником в топе\n\nСпасибо за поддержку! ❤️")
+        what = f"Статус «Донатер» — {cardgame.DONOR_PRICE} ⭐ (до {until})"
+    else:
+        from urllib.parse import quote
+        link = f"https://t.me/{context.bot.username}?start=gift_{result['id']}"
+        share = ("https://t.me/share/url?url=" + quote(link)
+                 + "&text=" + quote("🎁 Дарю тебе подарок в карточной игре! Забирай 👇"))
+        title = cardgame.gift_title(pack)
+        await update.message.reply_text(
+            f"🎁 Подарок «{title}» оплачен!\n\nОтправь другу эту ссылку — он откроет её и заберёт подарок:\n{link}\n\n"
+            f"Ссылка одноразовая. Если друг не заберёт подарок, через {cardgame.GIFT_SELF_CLAIM_DAYS} дн. "
+            "ты сможешь открыть его сам по этой же ссылке.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📤 Отправить другу", url=share)]]))
+        what = f"Подарок: {title} — {cardgame.gift_price(pack)} ⭐"
+
+    await _notify_admins(
+        f"💰 ПОКУПКА\n\n👤 {_display_name(str(user.id))}\n🆔 ID: {user.id}\n"
+        f"{what}\n"
+        f"ID платежа (нужен для возврата): {charge}"
     )
-    for admin_id in [int(a.strip()) for a in ADMIN_CHAT_ID.split(",")]:
-        try:
-            await context.bot.send_message(chat_id=admin_id, text=admin_text)
-        except Exception:
-            logger.exception(f"Не удалось уведомить админа {admin_id} о покупке")
 
 async def paysupport_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поддержка по платежам (Telegram ждёт эту команду от ботов, принимающих звёзды)."""
