@@ -204,7 +204,7 @@ async function loadTop(sort) {
     const star = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>';
     const right = u => ({ score: u.score + ' 📍', cards: u.cards_unique + ' 🃏', coins: u.coins + ' 🪙', stars: (u.stars || 0) + ' ⭐' }[sort]);
     list.innerHTML = data.map((u, i) => {
-      const display = u.username ? '@' + u.username : 'ID:' + u.user_id;
+      const display = (u.username ? '@' + u.username : 'ID:' + u.user_id) + (u.donor ? ' 💎' : '');
       const meta = [u.status || '', '🃏 ' + (u.cards_unique || 0), '🪙 ' + (u.coins || 0), u.stars != null ? '⭐ ' + u.stars : ''].filter(Boolean).join(' · ');
       const rank = i < 3 ? `<div class="lb-rank lb-medal" style="color:${medal[i]}">${star}</div>` : `<div class="lb-rank lb-num">${i + 1}</div>`;
       const letter = esc((u.username || String(u.user_id) || '?').charAt(0).toUpperCase());
