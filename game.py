@@ -200,12 +200,12 @@ STARS_DAILY_CAP = None
 # ---------- СТАРТОВЫЙ НАБОР · СТАТУС ДОНАТЕРА · ПОДАРКИ ДРУГУ (всё за ⭐) ----------
 # Стартовый набор: покупается ОДИН раз на аккаунт. Слот = «минимальная редкость», как в PACK_SLOTS.
 STARTER_PRICE = 250
-STARTER_PACKS = [("mega", 2), ("rare", 2)]   # из каких паков состоит набор: (ключ из PACKS, сколько штук)
-STARTER_COINS = 100            # 🪙 в придачу к карточкам
+STARTER_SLOTS = ["uncommon", "uncommon", "uncommon", "rare", "rare"]   # 5 карточек: 3 минимум Uncommon + 2 минимум Rare
+STARTER_COINS = 120            # 🪙 в придачу к карточкам
 # «Экономия N%» — просто текст для описания (косметика), сама не считается. Поменять число можно тут.
 STARTER_SAVE_PCT = 50
 STARTER_VALUE = 0              # зачёркнутая «старая цена» не показывается
-STARTER_CARDS = sum(len(PACK_SLOTS[k]) * n for k, n in STARTER_PACKS)
+STARTER_CARDS = len(STARTER_SLOTS)
 
 # Статус «Донатер» 💎: действует DONOR_DAYS дней, повторная покупка ПРОДЛЕВАЕТ (дни складываются).
 DONOR_PRICE = 300
@@ -218,7 +218,7 @@ DONOR_COIN_CAP = 80            # лимит монет за действия в 
 # t.me/<бот>?start=gift_<id>. Друг открывает ссылку — пак зачисляется ему. Если друг так и не забрал,
 # через GIFT_SELF_CLAIM_DAYS дней покупатель может открыть этот пак сам (по той же ссылке).
 GIFT_SELF_CLAIM_DAYS = 7
-GIFT_PRICE_MULT = 3            # подарок-ПАК стоит в столько раз дороже того же пака для себя (1 = по цене пака)
+GIFT_PRICE_MULT = 1            # подарок-ПАК стоит в столько раз дороже того же пака для себя (1 = по цене пака)
 # Стартовый набор и статус «Донатер» тоже можно подарить — по своей обычной цене (250 / 300 ⭐).
 GIFT_EXTRA = {"starter": STARTER_PRICE, "donor": DONOR_PRICE}
 GIFT_EXTRA_TITLES = {"starter": "Стартовый набор", "donor": "Статус «Донатер» 💎"}
@@ -541,7 +541,7 @@ def offer(code: str, g: dict = None) -> dict:
         if g is not None and g.get("starter_bought"):
             return {"ok": False, "error": "Стартовый набор можно купить только один раз — он у тебя уже есть 🙂"}
         return {"ok": True, "kind": "starter", "pack": "-", "price": STARTER_PRICE, "title": "Стартовый набор",
-                "desc": f"{STARTER_CARDS} карточек (2 Мега-пака и 2 Редких) и {STARTER_COINS} монет. Экономия {STARTER_SAVE_PCT}%"}
+                "desc": f"{STARTER_CARDS} карточек (3 минимум Uncommon и 2 минимум Rare) и {STARTER_COINS} монет. Экономия {STARTER_SAVE_PCT}%"}
     if code == "donor":
         return {"ok": True, "kind": "donor", "pack": "-", "price": DONOR_PRICE, "title": "Статус «Донатер» 💎",
                 "desc": (f"{DONOR_DAYS} дней: ежедневный бонус ×{DONOR_DAILY_MULT}, {DONOR_PVP_LIMIT} дуэлей в сутки, "
@@ -612,13 +612,7 @@ def _give_starter(g: dict):
     """Выдаёт содержимое стартового набора (карточки + монеты) и помечает набор купленным."""
     g["starter_bought"] = True
     g["coins"] += STARTER_COINS
-    got, new = [], []
-    for key, n in STARTER_PACKS:
-        for _ in range(n):
-            gg, nn = _open_slots(g, PACK_SLOTS[key], distinct=key in PACK_DISTINCT)
-            got += gg
-            new += nn
-    return got, new
+    return _open_slots(g, STARTER_SLOTS)
 
 
 def _give_donor(g: dict) -> int:
