@@ -50,7 +50,9 @@ function applyServerState(st) {
     collection: coll, counts: st.cards || {}, pvpWins: st.pvp_wins || 0, challenge: st.challenge || null,
     openCost: st.open_cost || 20, daily: st.daily || null, showStars: !!st.show_stars,
     trade: st.trade || [], contest: st.contest || null, completed: !!st.completed,
-    packs: st.packs || {}, starsCap: st.stars_cap, pvpLeft: st.pvp_left, exchange: st.exchange || null };
+    packs: st.packs || {}, starsCap: st.stars_cap, pvpLeft: st.pvp_left, exchange: st.exchange || null,
+    starter: st.starter || null, donor: st.donor || null, gifts: st.gifts || [], giftPrices: st.gift_prices || {}, giftItems: st.gift_items || [],
+    botUsername: st.bot_username || (GAME && GAME.botUsername) || '' };
 }
 function getState() { return GAME; }
 function countOf(id) { return (GAME.counts && GAME.counts[id]) || 0; }
@@ -121,8 +123,9 @@ function renderGame() {
   const spt = $id('stars-public-toggle');
   if (spt) { spt.checked = !!s.showStars; $id('stars-public-row').style.display = 'flex'; }
   set('pvp-left', s.pvpLeft ?? '—');
+  const ss = $id('shop-status'); if (ss) ss.textContent = s.donor?.active ? '💎 Донатер · бонусы активны' : 'Паки — за звёзды Telegram ⭐';
 
-  renderDaily(); renderTrade(); renderContest(); renderCollection(); renderPvPCards(); renderFriendCards();
+  renderDaily(); renderOffers(); renderTrade(); renderContest(); renderCollection(); renderPvPCards(); renderFriendCards();
 }
 
 /* ═══ Ежедневный бонус ═══ */
@@ -130,10 +133,11 @@ function renderDaily() {
   const box = $id('daily-card'), d = GAME.daily;
   if (!box || !d) return;
   box.style.display = 'flex';
+  const dtag = GAME.donor?.active ? ' · 💎 ×' + GAME.donor.daily_mult : '';
   const day = d.available ? d.streak + 1 : d.streak;
   const dots = Array.from({ length: 7 }, (_, i) => `<span class="daily-dot${i < ((day - 1) % 7) + (d.available ? 0 : 1) ? ' on' : ''}"></span>`).join('');
   if (d.available) {
-    box.innerHTML = `<div><div class="daily-title">🎁 Ежедневный бонус: +${d.amount} 🪙</div>
+    box.innerHTML = `<div><div class="daily-title">🎁 Ежедневный бонус: +${d.amount} 🪙${dtag}</div>
       <div class="daily-sub">${d.streak > 0 ? 'Серия: ' + d.streak + ' дн. — не пропускай, бонус растёт' : 'Заходи каждый день — бонус растёт'}</div>
       <div class="daily-dots">${dots}</div></div>
       <button class="btn btn-primary" style="height:38px;font-size:13px;flex:0 0 auto;width:auto;padding:0 16px" onclick="claimDaily()">Забрать</button>`;
@@ -239,6 +243,7 @@ async function openCard() {
 
 /* ═══ Покупка пака за звёзды Telegram ═══ */
 let invoiceOpen = false;
+// type: ключ пака | 'starter' | 'donor' | 'gift:<ключ пака>'
 async function buyPack(type) {
   if (gameBusy || invoiceOpen) return;
   const t = window.Telegram?.WebApp;
@@ -248,15 +253,100 @@ async function buyPack(type) {
   try { r = await gameApi('pack_invoice', { pack: type }); }
   catch (e) { showToast(e.message, 'error'); return; }
   finally { gameBusy = false; }   // busy только на время запроса: зависшее окно оплаты не блокирует игру
+  const prevUntil = GAME.donor?.until || 0, prevGifts = (GAME.gifts || []).length;
   invoiceOpen = true;
   const unlock = setTimeout(() => { invoiceOpen = false; }, 120000);
   try {
     t.openInvoice(r.url, status => {
       clearTimeout(unlock); invoiceOpen = false;
-      if (status === 'paid') { showToast('Оплата прошла! Открываем пак…'); claimPacks(0); }
+      if (status === 'paid') afterPayment(type, prevUntil, prevGifts);
       else if (status === 'failed') showToast('Оплата не прошла. Попробуй ещё раз', 'error');
     });
   } catch (e) { clearTimeout(unlock); invoiceOpen = false; showToast('Не удалось открыть окно оплаты', 'error'); }
+}
+function afterPayment(type, prevUntil, prevGifts) {
+  if (type === 'donor') {
+    showToast('Оплата прошла! Активируем статус…');
+    waitState(() => (GAME.donor?.until || 0) > prevUntil, '💎 Ты теперь донатер! Бонусы уже работают');
+  } else if (type.startsWith('gift:')) {
+    showToast('Оплата прошла! Готовим подарок…');
+    waitState(() => (GAME.gifts || []).length > prevGifts, '🎁 Подарок готов — отправь ссылку другу',
+      () => $id('gift-list')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+  } else {
+    showToast('Оплата прошла! Открываем пак…');
+    claimPacks(0);
+  }
+}
+// бот зачисляет платёж за секунду-две: опрашиваем состояние, пока не появится результат
+async function waitState(cond, doneMsg, after) {
+  for (let i = 0; i < 10; i++) {
+    try { await gameApi('state'); renderGame(); if (cond()) { showToast(doneMsg); if (after) after(); return; } }
+    catch (e) { console.error(e); }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  showToast('Оплата прошла. Если результат не появился — обнови приложение через минуту 🙏');
+}
+function buyGift() { const sel = $id('gift-select'); if (sel && sel.value) buyPack('gift:' + sel.value); }
+
+/* ═══ Магазин: стартовый набор, донатер, подарки ═══ */
+function fmtShortDate(ts) { return new Date(ts * 1000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }); }
+function renderOffers() {
+  const st = GAME.starter;
+  // карточка донатера показывается всегда; если сервер почему-то не прислал данные — берём запасные
+  const dn = GAME.donor || { stars: 300, active: false, until: 0, days: 30, daily_mult: 2, pvp_limit: 8, coin_cap: 80, base_pvp_limit: 5, base_coin_cap: 40 };
+  const sc = $id('starter-card');
+  if (sc) {
+    sc.style.display = st && st.available ? 'block' : 'none';
+    if (st) {
+      $id('starter-price').textContent = st.stars;
+      $id('starter-old').textContent = st.value > st.stars ? st.value : '';
+      $id('starter-save').textContent = '';
+      $id('starter-desc').textContent = st.cards + ' карточек (2 Мега-пака и 2 Редких) и ' + st.coins + ' 🪙 в подарок. Покупается один раз.' +
+        (st.save_pct > 0 ? ' Экономия ' + st.save_pct + '%' : '');
+    }
+  }
+  const dc = $id('donor-card');
+  if (dc) {
+    dc.style.display = 'block';
+    $id('donor-price').textContent = dn.stars;
+    $id('donor-perks').innerHTML = [
+      'Ежедневный бонус монет ×' + dn.daily_mult,
+      dn.pvp_limit + ' дуэлей с ареной в сутки вместо ' + dn.base_pvp_limit,
+      'До ' + dn.coin_cap + ' 🪙 в сутки за действия вместо ' + dn.base_coin_cap,
+      'Значок 💎 рядом с ником в топе и конкурсе',
+    ].map(x => '<li>' + x + '</li>').join('');
+    const days = dn.active ? Math.max(1, Math.ceil((dn.until * 1000 - Date.now()) / 86400000)) : 0;
+    $id('donor-status').textContent = dn.active ? '💎 Статус активен до ' + fmtShortDate(dn.until) + ' (ещё ' + days + ' дн.)' : 'Действует ' + dn.days + ' дней';
+    $id('donor-buy-label').textContent = dn.active ? 'Продлить на ' + dn.days + ' дней' : 'Стать донатером';
+  }
+  const sel = $id('gift-select');
+  if (sel && Object.keys(GAME.packs || {}).length) {
+    const cur = sel.value;
+    const items = (GAME.giftItems && GAME.giftItems.length) ? GAME.giftItems
+      : Object.entries(GAME.packs).map(([k, p]) => ({ key: k, title: p.title, stars: (GAME.giftPrices && GAME.giftPrices[k]) || p.stars }));
+    sel.innerHTML = items.map(x => `<option value="${esc(x.key)}">${esc(x.title)} — ${x.stars} ⭐</option>`).join('');
+    if (cur && items.some(x => x.key === cur)) sel.value = cur;
+  }
+  const gl = $id('gift-list');
+  if (gl) gl.innerHTML = (GAME.gifts || []).map(x => `<div class="gift-item"><div>🎁 ${esc(x.title)}<small>Ждёт друга · если не заберёт, через ${x.self_claim_days} дн. откроешь сам</small></div>
+    <div class="gift-actions"><button onclick="shareGift('${esc(x.id)}')">Отправить</button><button class="ghost" onclick="copyGift('${esc(x.id)}')">Ссылка</button></div></div>`).join('');
+}
+function giftLink(id) { return GAME.botUsername ? 'https://t.me/' + GAME.botUsername + '?start=gift_' + id : ''; }
+function copyGift(id) {
+  const link = giftLink(id); if (!link) { showToast('Не удалось собрать ссылку, обнови приложение', 'error'); return; }
+  const done = () => showToast('Ссылка скопирована! Отправь другу.');
+  const fallback = () => {
+    const ta = document.createElement('textarea'); ta.value = link; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { showToast('Скопируй ссылку вручную: ' + link, 'error'); }
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(link).then(done).catch(fallback); else fallback();
+}
+function shareGift(id) {
+  const link = giftLink(id); if (!link) { showToast('Не удалось собрать ссылку, обнови приложение', 'error'); return; }
+  const t = window.Telegram?.WebApp;
+  const url = 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent('🎁 Дарю тебе подарок в карточной игре! Забирай 👇');
+  if (t?.openTelegramLink) t.openTelegramLink(url); else copyGift(id);
 }
 // карточки зачисляются, когда бот получит подтверждение платежа — это секунда-две
 async function claimPacks(tries, silent) {
