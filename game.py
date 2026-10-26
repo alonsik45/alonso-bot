@@ -209,7 +209,7 @@ STARTER_VALUE = 0              # зачёркнутая «старая цена�
 STARTER_CARDS = len(STARTER_SLOTS)
 
 # Статус «Донатер» 💎: действует DONOR_DAYS дней, повторная покупка ПРОДЛЕВАЕТ (дни складываются).
-DONOR_PRICE = 50
+DONOR_PRICE = 300
 DONOR_DAYS = 30
 DONOR_DAILY_MULT = 2           # ежедневный бонус монет ×2
 DONOR_PVP_LIMIT = 8            # дуэлей с ареной в сутки (у остальных — PVP_DAILY_LIMIT)
