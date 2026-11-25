@@ -469,23 +469,56 @@ def save_user_stats():
     except Exception as e:
         logger.exception(f"❌ Ошибка при сохранении статистики: {e}")
 
+def _new_stats_entry():
+    return {
+        "questions_anonymous": 0,
+        "questions_named": 0,
+        "ideas": 0,
+        "ads": 0,
+        "cooperation": 0,
+        "other_proposals": 0,
+        "story": 0,
+        "username": None,
+        "status": "🌟 Новичок",
+        "manual_status": False
+    }
+
 def init_user_stats(user_id):
     """Инициализировать статистику пользователя"""
     user_id_str = str(user_id)
     if user_id_str not in user_stats:
-        user_stats[user_id_str] = {
-            "questions_anonymous": 0,
-            "questions_named": 0,
-            "ideas": 0,
-            "ads": 0,
-            "cooperation": 0,
-            "other_proposals": 0,
-            "story": 0,
-            "username": None,
-            "status": "🌟 Новичок",
-            "manual_status": False
-        }
+        user_stats[user_id_str] = _new_stats_entry()
         save_user_stats()
+
+# Очки в общий топ за игру «Ситуации»
+SIT_PLAY_POINTS = 1   # за участие (команда сдала ответ)
+SIT_WIN_POINTS = 3    # за победу команды
+
+def sit_record_stats(updates: dict):
+    """Игра «Ситуации»: {uid: {"sit_played": 1, "sit_wins": 0/1}}.
+    Обновляет всех в памяти и пишет на GitHub ОДНИМ коммитом (вызывается через asyncio.to_thread)."""
+    for uid, inc in updates.items():
+        entry = user_stats.setdefault(str(uid), _new_stats_entry())
+        for key, val in inc.items():
+            entry[key] = entry.get(key, 0) + val
+    save_user_stats()
+
+def _sit_claim(user_id) -> bool:
+    """Игра «Ситуации» забирает пользователя у других режимов (вопрос/ЧБД/медиа/ИИ-пересылка).
+    False — нельзя (админ сейчас отвечает на вопрос или пишет рассылку)."""
+    if user_id in admin_answering or user_id in admin_broadcasting:
+        return False
+    waiting_users.pop(user_id, None)
+    media_mode.pop(user_id, None)
+    pending_ai_forward.pop(user_id, None)
+    return True
+
+def _sit_busy(user_id) -> bool:
+    """True, если пользователь сейчас в другом режиме бота — игра на это время уступает."""
+    if user_id in waiting_users or user_id in admin_answering or user_id in admin_broadcasting:
+        return True
+    t = media_mode.get(user_id)
+    return bool(t and time.time() - t <= MEDIA_MODE_TTL)
 
 def increment_stat(user_id, stat_type):
     """Увеличить статистику пользователя и обновить статус"""
@@ -553,10 +586,13 @@ def get_top_users(limit=10, sort="score"):
     Звёзды показываются только у тех, кто сам включил это в магазине игры."""
     rows = []
     for user_id_str, stats in user_stats.items():
+        sit_played = stats.get("sit_played", 0)
+        sit_wins = stats.get("sit_wins", 0)
         total_score = (
             stats["questions_anonymous"] + stats["questions_named"] +
             stats["ideas"] + stats["ads"] + stats["cooperation"] +
-            stats["other_proposals"] + stats["story"]
+            stats["other_proposals"] + stats["story"] +
+            sit_played * SIT_PLAY_POINTS + sit_wins * SIT_WIN_POINTS
         )
         g = stats.get("game") or {}
         cards = g.get("cards") or {}
@@ -567,6 +603,8 @@ def get_top_users(limit=10, sort="score"):
             "questions": stats["questions_anonymous"] + stats["questions_named"],
             "ideas": stats["ideas"] + stats["ads"] + stats["cooperation"] + stats["other_proposals"],
             "story": stats["story"],
+            "sit_played": sit_played,
+            "sit_wins": sit_wins,
             "status": effective_status(stats),
             "cards_unique": len(cards),
             "cards_total": sum(cards.values()),
@@ -2115,6 +2153,7 @@ async def show_top_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❓ Вопросов: {user['questions']} | "
             f"💡 Идей: {user['ideas']} | "
             f"🎬 ЧБД: {user['story']}\n"
+            + (f"   🎭 Ситуации: {user['sit_played']} игр, {user['sit_wins']} 🏆\n" if user.get("sit_played") else "") +
             f"   🎴 Карточек: {user['cards_unique']}/{len(cardgame.CARDS)} | "
             f"🪙 Монет: {user['coins']}"
             + (f" | ⭐ Звёзд: {user['stars']}" if user.get("stars") else "") + "\n"
@@ -2419,6 +2458,7 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❓ Вопросов: {user['questions']} | "
             f"💡 Идей: {user['ideas']} | "
             f"🎬 ЧБД: {user['story']}\n"
+            + (f"   🎭 Ситуации: {user['sit_played']} игр, {user['sit_wins']} 🏆\n" if user.get("sit_played") else "") +
             f"   {user['status']}\n\n"
         )
     
@@ -3878,6 +3918,10 @@ def main():
         app,
         [int(a.strip()) for a in ADMIN_CHAT_ID.split(",") if a.strip()],
         lambda: all_users,
+        storage=github_storage,        # банк ситуаций (situations_bank.json)
+        stat_hook=sit_record_stats,    # участие/победы → статистика и топ
+        claim=_sit_claim,              # игра забирает игрока у других режимов
+        busy=_sit_busy,                # игра уступает, если игрок в ЧБД/вопросе/медиа и т.п.
     )
 
     # Кнопки главного меню
