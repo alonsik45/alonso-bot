@@ -37,6 +37,7 @@ import launch
 import random
 import re
 import donations
+import situations
 
 # ============================================================
 # НАСТРОЙКИ
@@ -1411,6 +1412,7 @@ def main_menu_keyboard(chat_type: str = "private", bot_username: str = None):
     if chat_type == "private":
         keyboard.append([InlineKeyboardButton("🎙 Голосовое / кружок / фото / видео", callback_data="menu_media")])
         keyboard.append([InlineKeyboardButton("👥 Пригласить друзей", web_app=WebAppInfo(url=f"{MINIAPP_URL}?section=friends"))])
+        keyboard.append([InlineKeyboardButton("🎭 Ситуации", callback_data="sit_menu")])
     keyboard += [
         [InlineKeyboardButton("❓ Вопросы", callback_data="menu_questions")],
         [InlineKeyboardButton("🎬 ЧБД — Что было дальше?", callback_data="write_story")],
@@ -3870,6 +3872,13 @@ def main():
     app.add_handler(CommandHandler("contest", contest_command))
     app.add_handler(CommandHandler("contest_draw", contest_draw_command))
     app.add_handler(CommandHandler("paysupport", paysupport_command))
+
+    # Игра «Ситуации»: /go, /sgo, /vybor. Должна регистрироваться ДО receive_message.
+    situations.register(
+        app,
+        [int(a.strip()) for a in ADMIN_CHAT_ID.split(",") if a.strip()],
+        lambda: all_users,
+    )
 
     # Кнопки главного меню
     app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
