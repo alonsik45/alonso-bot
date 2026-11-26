@@ -18,9 +18,9 @@ import logging
 import math
 import random
 import time
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
     CallbackQueryHandler,
@@ -89,6 +89,7 @@ _claim = lambda uid: True  # забрать пользователя у друг
 _busy = lambda uid: False  # True, если пользователь сейчас в другом режиме бота
 _storage = None
 _app = None
+MINIAPP_URL = ""          # адрес mini app (задаётся в register) — для кнопок «📱 Открыть в приложении»
 
 _locks = {}
 _tasks = set()
@@ -144,6 +145,7 @@ class Game:
         self.admin_chat = {}       # admin uid -> tid (с какой командой админ сейчас в чате)
         self.last_req = {}         # tid -> время последнего запроса «связь с админом»
         self.cards = {}            # "admin:tid" -> message_id карточки ответа у админа
+        self.web = set()           # игроки, зашедшие через mini app (их недоступность в чате не выкидывает из игры)
 
     def rebuild(self):
         self.user_team = {u: tid for tid, t in self.teams.items() for u in t["members"]}
@@ -219,7 +221,7 @@ def _cancel_jobs():
 async def _on_blocked(bot, uid):
     """Пользователь заблокировал бота / чат недоступен — убираем его из игры."""
     g = G
-    if not g or uid in ADMINS or uid in g.gone:
+    if not g or uid in ADMINS or uid in g.gone or uid in g.web:
         return
     g.gone.add(uid)
     logger.info("Ситуации: пользователь %s недоступен — выбывает из игры", uid)
@@ -393,8 +395,15 @@ def _lobby_text(g):
     )
 
 
+def _app_btn():
+    """Кнопка открытия игры в mini app (если адрес задан)."""
+    if not MINIAPP_URL:
+        return []
+    return [InlineKeyboardButton("📱 Открыть в приложении", web_app=WebAppInfo(url=MINIAPP_URL + "?section=sit"))]
+
+
 def _lobby_kb():
-    return _kb([_b("🚪 Выйти из комнаты", "sit_leave")])
+    return _kb([_b("🚪 Выйти из комнаты", "sit_leave")], _app_btn())
 
 
 def _work_kb():
@@ -403,6 +412,7 @@ def _work_kb():
         [_b("✅ Сдать ответ", "sit_submit")],
         [_b("📞 Связь с админом", "sit_contact")],
         [_b("🚪 Покинуть игру", "sit_quit")],
+        _app_btn(),
     )
 
 
@@ -760,6 +770,7 @@ async def _join(bot, uid, name):
     g = G
     g.players[uid] = name
     g.gone.discard(uid)
+    g.web.discard(uid)
     _touch()
     old = g.lobby_msgs.get(uid)
     if old and await _edit(bot, uid, old, _lobby_text(g), _lobby_kb()):
@@ -1202,13 +1213,33 @@ def _validate(msg):
     return info, None
 
 
+def _file_meta(msg, kind):
+    """(file_id, mime) вложения — чтобы mini app мог показать ответ."""
+    v = getattr(msg, kind, None)
+    if not v or kind == "text":
+        return None, None
+    if kind == "photo":
+        return v[-1].file_id, "image/jpeg"
+    mime = getattr(v, "mime_type", None)
+    if kind == "video_note":
+        mime = "video/mp4"
+    elif kind == "voice":
+        mime = mime or "audio/ogg"
+    elif kind == "sticker":
+        mime = "video/webm" if getattr(v, "is_video", False) else (
+            "application/x-tgsticker" if getattr(v, "is_animated", False) else "image/webp")
+    return v.file_id, mime or "application/octet-stream"
+
+
 def _make_sub(msg, info, by):
     kind, cap_ok, _ = info
+    fid, mime = _file_meta(msg, kind)
     return {
         "kind": "text" if kind == "text" else "media",
         "text": (msg.text or "")[:MAX_SUB_TEXT] if kind == "text" else None,
         "caption": msg.caption, "cap_ok": cap_ok,
         "chat_id": msg.chat_id, "message_id": msg.message_id, "by": by,
+        "mtype": kind, "file_id": fid, "mime": mime, "ts": time.time(),
     }
 
 
@@ -1417,6 +1448,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t = g.teams.get(tid)
         if not t:
             return
+        _log(t, uid, "Админ", _log_text(msg, info), info[0], admin=True)
         await asyncio.gather(*(_relay_one(bot, m, msg, "👑 Админ", info) for m in t["members"]))
         return
 
@@ -1448,6 +1480,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if err:
         await msg.reply_text(err)
         return
+    _log(team, uid, name, _log_text(msg, info), info[0])
     targets = [(m, f"👤 {name}") for m in team["members"] if m != uid]
     targets += [(a, f"#{tid} {name}") for a in _admins_of(g, tid)]
     await asyncio.gather(*(_relay_one(bot, to, msg, label, info) for to, label in targets))
@@ -1579,7 +1612,7 @@ async def _notify_all(bot, admin, g):
     sent = failed = 0
     try:
         users = [u for u in list(_get_all_users()) if u not in g.players and u not in g.gone]
-        kb = _kb([_b("🎭 Войти в комнату", "sit_menu")])
+        kb = _kb([_b("🎭 Войти в комнату", "sit_menu")], _app_btn())
         text = "🎭 Начинается игра «Ситуации»! Заходи в комнату 👇"
 
         async def one(u):
@@ -1861,6 +1894,7 @@ async def _admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new.round = g.round + 1
             new.players = {u: n for u, n in g.players.items() if u not in g.gone}
             new.gone = set(g.gone)
+            new.web = set(g.web)
             new.panels = dict(g.panels)
             G = new
             err = await _close_lobby(bot)
@@ -2063,16 +2097,502 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ------------------------------------------------------------------
+# API для Mini App (те же данные G, что и у игры в чате бота)
+# ------------------------------------------------------------------
+# Mini App опрашивает api_state() раз в пару секунд и шлёт действия в api_action().
+# Игра в чате при этом продолжает работать: обе «морды» крутятся на одном состоянии.
+LOG_MAX = 200
+MEDIA_CACHE_BYTES = 60 * 1024 * 1024
+_media_cache = OrderedDict()      # file_id -> (bytes, mime)
+_media_cache_size = 0
+
+
+def _uname(user):
+    return user.get("first_name") or (f"@{user['username']}" if user.get("username") else str(user.get("id")))
+
+
+def _log_text(msg, info):
+    kind = info[0]
+    if kind == "text":
+        return msg.text[:MAX_SUB_TEXT]
+    return f"[{kind}] {msg.caption or ''}".strip()
+
+
+def _log(t, uid, name, text, mtype="text", admin=False):
+    """Запись в журнал чата команды (его показывает mini app)."""
+    log = t.setdefault("log", [])
+    t["log_n"] = t.get("log_n", 0) + 1
+    log.append({"n": t["log_n"], "uid": uid, "name": name, "text": text, "mtype": mtype,
+                "admin": admin, "ts": int(time.time())})
+    if len(log) > LOG_MAX:
+        del log[:-LOG_MAX]
+    _touch()
+
+
+def _sub_view(sub, tid):
+    if not sub:
+        return None
+    return {
+        "kind": sub["kind"], "text": sub.get("text"), "caption": sub.get("caption"),
+        "mtype": sub.get("mtype"), "mime": sub.get("mime"),
+        "has_file": bool(sub.get("file_id")), "ver": int(sub.get("ts") or 0),
+        "edited": bool(sub.get("edited")),
+    }
+
+
+def _ranking(g):
+    cnt = Counter(g.votes.values())
+    order = sorted(g.order, key=lambda t: -cnt.get(t, 0))
+    top = cnt.get(order[0], 0) if order else 0
+    return [{"tid": t, "members": [g.players.get(u, str(u)) for u in g.teams[t]["members"]],
+             "votes": cnt.get(t, 0), "winner": top > 0 and cnt.get(t, 0) == top,
+             "answer": _sub_view(g.teams[t]["sub"], t)} for t in order]
+
+
+def api_state(user):
+    """Всё, что нужно экрану mini app для этого пользователя (JSON-совместимый dict)."""
+    uid = int(user["id"])
+    g = G
+    admin = uid in ADMINS
+    out = {"phase": "none", "is_admin": admin, "uid": uid,
+           "bot_username": getattr(getattr(_app, "bot", None), "username", None)}
+    if g is None:
+        return out
+    tid = g.user_team.get(uid)
+    team = g.teams.get(tid) if tid else None
+    out.update({
+        "phase": g.phase, "round": g.round, "players_count": len(g.players),
+        "in_room": uid in g.players, "in_game": team is not None, "reserve": uid in g.reserve,
+        "situation": g.situation if g.phase in ("work", "moderation", "voting", "finished") else None,
+        "work_left": max(0, int(g.work_ends - time.time())) if g.phase == "work" else 0,
+        "team_size": g.team_size, "work_minutes": g.work_minutes,
+    })
+    if team is not None:
+        out["team"] = {
+            "id": tid, "members": [{"id": u, "name": g.players.get(u, str(u))} for u in team["members"]],
+            "submitted": bool(team["sub"]), "answer": _sub_view(team["sub"], tid),
+            "chat": team.get("log", [])[-100:] if g.phase in ("work", "moderation") else [],
+            "chat_open": g.phase in ("work", "moderation"),
+        }
+    if g.phase == "picking":
+        out["picking"] = {
+            "mode": g.sit_mode, "voting_sit": g.voting_sit,
+            "options": list(g.sit_options) if (g.voting_sit and (uid in g.players or admin)) else [],
+            "my_vote": g.sit_votes.get(uid),
+            "can_suggest": g.sit_mode == "suggest" and not g.sg_closed and uid in g.players,
+            "my_suggestion": g.suggestions.get(uid), "sg_closed": g.sg_closed,
+        }
+    if g.phase == "voting":
+        out["answers"] = [{"tid": t, "n": i + 1, "mine": uid in g.teams[t]["members"],
+                           "answer": _sub_view(g.teams[t]["sub"], t)} for i, t in enumerate(g.order)]
+        out["my_vote"] = g.votes.get(uid)
+    if g.phase == "finished" and g.order:
+        out["results"] = _ranking(g)
+    if admin:
+        cnt_sit = Counter(g.sit_votes.values())
+        cnt_vote = Counter(g.votes.values())
+        out["admin"] = {
+            "modes": MODE_NAMES, "sit_mode": g.sit_mode, "time_options": list(TIME_OPTIONS),
+            "players": [{"id": u, "name": n} for u, n in g.players.items()],
+            "reserve_count": len(g.reserve),
+            "teams": [{"id": t, "members": [g.players.get(u, str(u)) for u in tm["members"]],
+                       "submitted": bool(tm["sub"]), "kept": tm["kept"],
+                       "answer": _sub_view(tm["sub"], t)} for t, tm in g.teams.items()],
+            "sit_options": list(g.sit_options), "voting_sit": g.voting_sit,
+            "sit_votes": {str(i): cnt_sit.get(i, 0) for i in range(len(g.sit_options))},
+            "sit_voted": len(g.sit_votes),
+            "ideas": [{"i": i, "text": t, "kept": k} for i, (_, t, k) in enumerate(_ideas(g))],
+            "sg_closed": g.sg_closed,
+            "votes": {str(t): cnt_vote.get(t, 0) for t in g.order}, "voted_count": len(g.votes),
+            "voters": len(g.voters), "extended": g.extended,
+            "submitted": sum(1 for t in g.teams.values() if t["sub"]), "teams_count": len(g.teams),
+            "notify_wait": max(0, int(NOTIFY_COOLDOWN - (time.time() - g.last_notify))),
+        }
+    return out
+
+
+def _clean(text, limit):
+    return " ".join(str(text or "").split())[:limit]
+
+
+async def api_action(user, action, p):
+    """Единая точка действий из mini app. Возвращает {"ok": True, "state": ...} или {"ok": False, "error": ...}."""
+    if _app is None:
+        return {"ok": False, "error": "Игра ещё не готова"}
+    if action == "state":
+        return {"ok": True, "state": api_state(user)}
+    extra = {}
+    try:
+        if action.startswith("a_"):
+            if int(user["id"]) not in ADMINS:
+                return {"ok": False, "error": "Только для админа"}
+            async with _lk("tr"):
+                err = await _api_admin(int(user["id"]), action[2:], p or {})
+        else:
+            err = await _api_player(user, action, p or {}, extra)
+    except (ValueError, TypeError, KeyError):
+        return {"ok": False, "error": "Некорректный запрос"}
+    except Exception:
+        logger.exception("Ситуации (mini app): ошибка действия %s", action)
+        return {"ok": False, "error": "Что-то пошло не так, попробуй ещё раз"}
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True, "state": api_state(user), **extra}
+
+
+async def _api_player(user, action, p, extra):
+    uid = int(user["id"])
+    bot = _app.bot
+    g = G
+    if g is None or (g.phase == "finished" and action != "vote"):
+        return "Сейчас игра «Ситуации» не идёт"
+    name = g.players.get(uid) or _uname(user)
+
+    if action == "join":
+        if g.phase != "lobby":
+            return "Набор уже закрыт"
+        g.players[uid] = _uname(user)
+        g.gone.discard(uid)
+        g.web.add(uid)
+        _touch()
+        return None
+
+    if action == "leave":
+        if g.phase != "lobby":
+            return "Набор уже закрыт"
+        g.players.pop(uid, None)
+        g.lobby_msgs.pop(uid, None)
+        _touch()
+        return None
+
+    if action == "reserve":
+        if g.phase not in ("picking", "ready", "work") or uid in g.players:
+            return "Сейчас в запас встать нельзя"
+        g.players[uid] = _uname(user)
+        g.gone.discard(uid)
+        g.web.add(uid)
+        g.reserve.add(uid)
+        _touch()
+        await _notify_admins(bot, f"🪑 {g.players[uid]} встал(а) в запас (всего: {len(g.reserve)}).")
+        return None
+
+    if action == "quit":
+        if g.phase not in ("picking", "ready", "work") or uid not in g.players:
+            return "Выйти уже нельзя"
+        await _remove_player(bot, uid, "вышел(а) сам(а)")
+        return None
+
+    if action == "suggest":
+        if not (g.phase == "picking" and g.sit_mode == "suggest" and not g.sg_closed and uid in g.players):
+            return "Сейчас идеи не принимаются"
+        text = _clean(p.get("text"), MAX_SUGGESTION_LEN)
+        if not text:
+            return "Пустая идея"
+        g.suggestions[uid] = text
+        g.pending.pop(uid, None)
+        _touch()
+        return None
+
+    if action == "svote":
+        if not (g.phase == "picking" and g.voting_sit and uid in g.players):
+            return "Голосование за ситуацию сейчас недоступно"
+        i = int(p.get("index"))
+        if not 0 <= i < len(g.sit_options):
+            return "Нет такого варианта"
+        g.sit_votes[uid] = i
+        _touch()
+        return None
+
+    tid = g.user_team.get(uid)
+    team = g.teams.get(tid) if tid else None
+
+    if action == "chat_send":
+        if team is None or g.phase not in ("work", "moderation"):
+            return "Чат сейчас недоступен"
+        if _flood(uid, "chat", *CHAT_FLOOD):
+            return "Не так быстро 🙂"
+        text = (str(p.get("text") or "")).strip()[:MAX_SUB_TEXT]
+        if not text:
+            return "Пустое сообщение"
+        _log(team, uid, name, text)
+        # тем, кто сидит в чате команды в Telegram, и админам в чате — дублируем сообщением
+        targets = [(m, f"👤 {name}") for m in team["members"] if m != uid and m in g.in_chat]
+        targets += [(a, f"#{tid} {name}") for a in _admins_of(g, tid)]
+        await asyncio.gather(*(_send(bot, to, f"{label}: {text}") for to, label in targets))
+        return None
+
+    if action == "submit":
+        if team is None or g.phase != "work":
+            return "Сдача ответов закрыта. Нужно поправить — «Связь с админом»"
+        text = (str(p.get("text") or "")).strip()[:MAX_SUB_TEXT]
+        if not text:
+            return "Пустой ответ"
+        g.pending.pop(uid, None)
+        team["sub"] = {"kind": "text", "text": text, "caption": None, "cap_ok": False, "chat_id": None,
+                       "message_id": None, "by": name, "mtype": "text", "file_id": None, "mime": None,
+                       "ts": time.time()}
+        team["kept"] = None
+        await _send_many(bot, [m for m in team["members"] if m != uid], f"✅ {name} сдал(а) ответ команды.")
+        _touch()
+        await _maybe_all_done(bot)
+        return None
+
+    if action == "submit_media":
+        # фото/видео/гс/кружок: ответ принимает бот в личке, mini app лишь включает режим сдачи
+        if team is None or g.phase != "work":
+            return "Сдача ответов закрыта"
+        if not _claim(uid):
+            return "Сначала закончи другое действие в боте"
+        g.pending[uid] = "submit"
+        m = await _send(bot, uid,
+                        "📨 Отправь итог ОДНИМ сообщением: текст, фото, видео, гс или кружок."
+                        + ("\n⚠️ Прежний ответ команды будет заменён." if team["sub"] else ""),
+                        _kb([_b("↩️ Отмена", "sit_submit_cancel")]))
+        if m is None:
+            g.pending.pop(uid, None)
+            return "Не получилось написать тебе в бот: открой чат с ботом, нажми Start и повтори"
+        return None
+
+    if action == "contact":
+        if team is None or g.phase not in ("work", "moderation"):
+            return "Связь с админом сейчас недоступна"
+        note = await _contact_admin(bot, uid)
+        extra["info"] = note or "📨 Запрос отправлен админу"
+        return None
+
+    if action == "vote":
+        if g.phase != "voting":
+            return "Голосование уже закончилось"
+        t = int(p.get("tid"))
+        if t not in g.order:
+            return "Нет такого ответа"
+        if uid in g.teams[t]["members"]:
+            return "За свою команду голосовать нельзя 🙂"
+        g.votes[uid] = t
+        g.voters.add(uid)
+        _touch()
+        return None
+
+    return "Неизвестное действие"
+
+
+async def _api_admin(uid, a, p):
+    """Действия админа. Вызывается под блокировкой _lk('tr'), как и кнопки админ-панели в чате."""
+    global G
+    bot = _app.bot
+
+    if a == "go":
+        if G and G.phase != "finished":
+            return "Игра уже идёт"
+        _cancel_jobs()
+        G = Game()
+        return None
+    g = G
+    if g is None:
+        return "Игра не запущена. Сначала «Открыть набор»"
+    if a == "stop":
+        await _stop_game(bot)
+        return None
+
+    err = None
+    if a in ("size", "mode", "time"):
+        if g.phase != "lobby":
+            return "Настройки меняются только до закрытия набора"
+        v = p.get("value")
+        if a == "size" and int(v) in (2, 3):
+            g.team_size = int(v)
+        elif a == "mode" and v in MODE_NAMES:
+            g.sit_mode = v
+        elif a == "time" and int(v) in TIME_OPTIONS:
+            g.work_minutes = int(v)
+        else:
+            return "Недопустимое значение"
+    elif a == "notify":
+        if g.phase != "lobby":
+            return "Оповещение — только пока идёт набор"
+        wait = NOTIFY_COOLDOWN - (time.time() - g.last_notify)
+        if wait > 0:
+            return f"Уже отправлено. Повтор через {int(wait)} сек"
+        g.last_notify = time.time()
+        _spawn(_notify_all(bot, uid, g))
+    elif a == "close":
+        if g.phase != "lobby":
+            return "Набор уже закрыт"
+        err = await _close_lobby(bot)
+    elif a == "pick":
+        if not (g.phase == "picking" and g.sit_mode == "manual"):
+            return "Сейчас это недоступно"
+        i = int(p.get("index"))
+        if not 0 <= i < len(g.sit_options):
+            return "Нет такого варианта"
+        g.situation = g.sit_options[i]
+        g.phase = "ready"
+    elif a == "own":
+        if not (g.phase == "picking" and g.sit_mode == "manual"):
+            return "Сейчас это недоступно"
+        text = _clean(p.get("text"), MAX_SUGGESTION_LEN)
+        if not text:
+            return "Пустая ситуация"
+        g.situation = text
+        g.pending.pop(uid, None)
+        g.phase = "ready"
+    elif a == "reroll":
+        if g.phase not in ("picking", "ready"):
+            return "Сейчас это недоступно"
+        if g.sit_mode == "manual":
+            g.phase = "picking"
+            g.sit_options = random.sample(_bank(), min(6, len(_bank())))
+        elif g.sit_mode == "vote":
+            g.phase = "picking"
+            await _start_sit_vote(bot, random.sample(_bank(), min(5, len(_bank()))))
+        elif g.sit_mode == "suggest":
+            g.situation = random.choice(_kept_ideas(g) or _bank())
+            g.phase = "ready"
+        else:
+            g.situation = random.choice(_bank())
+            g.phase = "ready"
+    elif a == "endsugg":
+        if not (g.phase == "picking" and g.sit_mode == "suggest" and not g.sg_closed):
+            return "Сейчас это недоступно"
+        g.sg_closed = True
+        g.pending = {u: k for u, k in g.pending.items() if k != "suggest"}
+        await _send_many(bot, list(g.players), "💡 Сбор идей закрыт. Админ выбирает ситуацию…")
+    elif a == "sgx":
+        if not (g.phase == "picking" and g.sg_closed):
+            return "Сейчас это недоступно"
+        ideas = _ideas(g)
+        i = int(p.get("index"))
+        if 0 <= i < len(ideas):
+            g.sg_off.symmetric_difference_update({ideas[i][0]})
+    elif a == "sgp":
+        if not (g.phase == "picking" and g.sg_closed):
+            return "Сейчас это недоступно"
+        ideas = _ideas(g)
+        i = int(p.get("index"))
+        if not (0 <= i < len(ideas) and ideas[i][2]):
+            return "Эта идея убрана"
+        g.situation = ideas[i][1]
+        g.sg_pick = False
+        g.voting_sit = False
+        g.phase = "ready"
+    elif a == "sgrand":
+        if not (g.phase == "picking" and g.sg_closed and not g.voting_sit):
+            return "Сейчас это недоступно"
+        _finish_suggest_random()
+    elif a == "sgvote":
+        if not (g.phase == "picking" and g.sg_closed and not g.voting_sit):
+            return "Сейчас это недоступно"
+        kept = _kept_ideas(g)
+        if len(kept) < 2:
+            return "Для голосования нужно минимум 2 идеи"
+        await _start_sit_vote(bot, random.sample(kept, min(VOTE_OPTIONS_MAX, len(kept))))
+    elif a == "endsvote":
+        if not (g.phase == "picking" and g.voting_sit):
+            return "Сейчас это недоступно"
+        _finish_vote()
+    elif a == "begin":
+        if g.phase != "ready":
+            return "Сначала выбери ситуацию"
+        err = await _begin_work(bot)
+    elif a == "plus":
+        if g.phase != "work":
+            return "Сейчас это недоступно"
+        await _add_time(bot, 2)
+    elif a == "endwork":
+        if g.phase != "work":
+            return "Сейчас это недоступно"
+        await _end_work(bot)
+    elif a == "keep":
+        if g.phase != "moderation":
+            return "Модерация сейчас не идёт"
+        t = g.teams.get(int(p.get("tid")))
+        if not (t and t["sub"]):
+            return "У команды нет ответа"
+        t["kept"] = bool(p.get("keep"))
+        await _update_cards(bot, int(p.get("tid")))
+    elif a == "keepall":
+        if g.phase != "moderation":
+            return "Модерация сейчас не идёт"
+        for tid, t in g.teams.items():
+            if t["sub"]:
+                t["kept"] = True
+                await _update_cards(bot, tid)
+    elif a == "startvote":
+        if g.phase != "moderation":
+            return "Сейчас это недоступно"
+        if not [t for t in g.teams.values() if t["sub"] and t["kept"] is True]:
+            return "Оставь хотя бы 1 ответ"
+        await _start_voting(bot)
+    elif a == "endvote":
+        if g.phase != "voting":
+            return "Голосование не идёт"
+        await _finish_voting(bot)
+    elif a == "again":
+        if g.phase != "finished":
+            return "Раунд ещё не закончен"
+        new = Game()
+        new.team_size, new.sit_mode, new.work_minutes = g.team_size, g.sit_mode, g.work_minutes
+        new.round = g.round + 1
+        new.players = {u: n for u, n in g.players.items() if u not in g.gone}
+        new.gone = set(g.gone)
+        new.web = set(g.web)
+        new.panels = dict(g.panels)
+        G = new
+        err = await _close_lobby(bot)
+    else:
+        return "Неизвестное действие"
+    if err:
+        return err
+    _touch()
+    return None
+
+
+async def api_media(user, tid):
+    """Файл из ответа команды (для <img>/<video>/<audio> в mini app). (bytes, mime) или None."""
+    global _media_cache_size
+    g = G
+    uid = int(user["id"])
+    t = g.teams.get(tid) if g else None
+    sub = t["sub"] if t else None
+    if not sub or not sub.get("file_id") or _app is None:
+        return None
+    allowed = (uid in ADMINS or uid in t["members"]
+               or (g.phase in ("voting", "finished") and tid in g.order))
+    if not allowed:
+        return None
+    fid = sub["file_id"]
+    if fid in _media_cache:
+        _media_cache.move_to_end(fid)
+        return _media_cache[fid]
+    try:
+        f = await _app.bot.get_file(fid)
+        data = bytes(await f.download_as_bytearray())
+    except TelegramError:
+        logger.warning("Ситуации: не удалось скачать файл ответа команды %s", tid)
+        return None
+    res = (data, sub.get("mime") or "application/octet-stream")
+    if len(data) <= MEDIA_CACHE_BYTES:
+        _media_cache[fid] = res
+        _media_cache_size += len(data)
+        while _media_cache_size > MEDIA_CACHE_BYTES and _media_cache:
+            _, (old, _m) = _media_cache.popitem(last=False)
+            _media_cache_size -= len(old)
+    return res
+
+
+# ------------------------------------------------------------------
 # Подключение
 # ------------------------------------------------------------------
-def register(app, admin_ids, get_all_users=None, *, storage=None, stat_hook=None, claim=None, busy=None):
+def register(app, admin_ids, get_all_users=None, *, storage=None, stat_hook=None, claim=None, busy=None, miniapp_url=None):
     """Вызвать в main() ДО регистрации общих MessageHandler (receive_message).
 
     storage   — GitHubStorage (для банка ситуаций), stat_hook — функция записи побед/участия в статистику,
     claim(uid) — забрать пользователя у других режимов бота (False — нельзя),
     busy(uid)  — True, если пользователь сейчас в другом режиме бота (игра уступает).
     """
-    global ADMINS, _get_all_users, _app, _storage, _stat_hook, _claim, _busy
+    global ADMINS, _get_all_users, _app, _storage, _stat_hook, _claim, _busy, MINIAPP_URL
+    if miniapp_url:
+        MINIAPP_URL = miniapp_url
     ADMINS = set(int(a) for a in admin_ids)
     if get_all_users:
         _get_all_users = get_all_users
