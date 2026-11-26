@@ -11,7 +11,7 @@ import time
 from typing import Awaitable, Callable, Optional
 from urllib.parse import parse_qsl
 
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 import httpx
 from pydantic import BaseModel, Field
@@ -117,6 +117,8 @@ def build_miniapp_router(
     sit_action: Optional[Callable[[dict, str, dict], Awaitable[dict]]] = None,
     sit_media: Optional[Callable[[dict, int], Awaitable[Optional[tuple]]]] = None,
     sit_avatar_ok: Optional[Callable[[int, int], bool]] = None,
+    sit_upload: Optional[Callable[..., Awaitable[dict]]] = None,
+    sit_chat_media: Optional[Callable[[dict, int, int], Awaitable[Optional[tuple]]]] = None,
 ) -> APIRouter:
     """Собирает APIRouter с эндпоинтами мини-аппа и админ-функциями."""
 
@@ -454,6 +456,37 @@ def build_miniapp_router(
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
         return JSONResponse(result)
+
+    @router.post("/api/sit/upload")
+    async def post_sit_upload(request: Request, kind: str, mtype: str, caption: str = "",
+                              x_telegram_init_data: Optional[str] = Header(default=None)):
+        """Вложение из mini app (тело запроса — сам файл, Content-Type — его MIME)."""
+        user = _authenticate(x_telegram_init_data)
+        if sit_upload is None:
+            raise HTTPException(status_code=404, detail="Игра недоступна")
+        limit = 21 * 1024 * 1024
+        if int(request.headers.get("content-length") or 0) > limit:
+            raise HTTPException(status_code=413, detail="Файл слишком большой")
+        data = await request.body()
+        if len(data) > limit:
+            raise HTTPException(status_code=413, detail="Файл слишком большой")
+        result = await sit_upload(user, kind, mtype, request.headers.get("content-type", ""), data, caption)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
+        return JSONResponse(result)
+
+    @router.get("/api/sit/chatmedia/{tid}/{n}")
+    async def get_sit_chat_media(tid: int, n: int, init: Optional[str] = None,
+                                 x_telegram_init_data: Optional[str] = Header(default=None)):
+        """Вложение из чата команды (?init= — <img>/<audio> не умеют слать заголовки)."""
+        user = _authenticate(x_telegram_init_data or init)
+        if sit_chat_media is None:
+            raise HTTPException(status_code=404, detail="not found")
+        res = await sit_chat_media(user, tid, n)
+        if not res:
+            raise HTTPException(status_code=404, detail="not found")
+        data, mime = res
+        return Response(content=data, media_type=mime, headers={"Cache-Control": "private, max-age=600"})
 
     @router.get("/api/sit/media/{tid}")
     async def get_sit_media(tid: int, init: Optional[str] = None,
