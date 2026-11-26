@@ -3941,6 +3941,7 @@ def main():
         stat_hook=sit_record_stats,    # участие/победы → статистика и топ
         claim=_sit_claim,              # игра забирает игрока у других режимов
         busy=_sit_busy,                # игра уступает, если игрок в ЧБД/вопросе/медиа и т.п.
+        miniapp_url=f"{MINIAPP_URL}?section=sit",
     )
 
     # Кнопки главного меню
@@ -4079,6 +4080,9 @@ def main():
         ai_reset=ai_reset_for_api,
         game_action=game_action_for_api,
         friends_info=friends_for_api,
+        sit_action=situations.api_action,
+        sit_media=situations.api_media,
+        sit_avatar_ok=situations.api_avatar_ok,
     ))
 
     miniapp_static_dir = os.path.join(
