@@ -1,6 +1,7 @@
 import os
 import copy
 import asyncio
+import threading
 import logging
 import json
 import time
@@ -462,10 +463,20 @@ def load_user_stats():
         logger.exception(f"❌ Ошибка при загрузке статистики: {e}")
         user_stats = {}
 
+# Один замок на ВСЕ изменения и записи user_stats: их делают и поток (asyncio.to_thread),
+# и event loop. RLock — чтобы можно было вызывать save внутри уже захваченного блока.
+_stats_lock = threading.RLock()
+
+def _save_stats_locked():
+    """Снимок + запись на GitHub под замком. Бросает исключение при ошибке.
+    Записи идут строго по очереди, поэтому старый снимок не перезапишет новый."""
+    with _stats_lock:
+        github_storage.save_stats(copy.deepcopy(user_stats))
+
 def save_user_stats():
     """Сохранить статистику пользователей на GitHub"""
     try:
-        github_storage.save_stats(user_stats)
+        _save_stats_locked()
     except Exception as e:
         logger.exception(f"❌ Ошибка при сохранении статистики: {e}")
 
@@ -486,9 +497,10 @@ def _new_stats_entry():
 def init_user_stats(user_id):
     """Инициализировать статистику пользователя"""
     user_id_str = str(user_id)
-    if user_id_str not in user_stats:
-        user_stats[user_id_str] = _new_stats_entry()
-        save_user_stats()
+    with _stats_lock:
+        if user_id_str not in user_stats:
+            user_stats[user_id_str] = _new_stats_entry()
+            save_user_stats()
 
 # Очки в общий топ за игру «Ситуации»
 SIT_PLAY_POINTS = 1   # за участие (команда сдала ответ)
@@ -497,11 +509,12 @@ SIT_WIN_POINTS = 3    # за победу команды
 def sit_record_stats(updates: dict):
     """Игра «Ситуации»: {uid: {"sit_played": 1, "sit_wins": 0/1}}.
     Обновляет всех в памяти и пишет на GitHub ОДНИМ коммитом (вызывается через asyncio.to_thread)."""
-    for uid, inc in updates.items():
-        entry = user_stats.setdefault(str(uid), _new_stats_entry())
-        for key, val in inc.items():
-            entry[key] = entry.get(key, 0) + val
-    save_user_stats()
+    with _stats_lock:
+        for uid, inc in updates.items():
+            entry = user_stats.setdefault(str(uid), _new_stats_entry())
+            for key, val in inc.items():
+                entry[key] = entry.get(key, 0) + val
+        save_user_stats()
 
 def _sit_claim(user_id) -> bool:
     """Игра «Ситуации» забирает пользователя у других режимов (вопрос/ЧБД/медиа/ИИ-пересылка).
@@ -523,12 +536,12 @@ def _sit_busy(user_id) -> bool:
 def increment_stat(user_id, stat_type):
     """Увеличить статистику пользователя и обновить статус"""
     user_id_str = str(user_id)
-    init_user_stats(user_id)
-    
-    user_stats[user_id_str][stat_type] += 1
-    update_user_status(user_id)
-    cardgame.award_for_action(user_stats[user_id_str], stat_type)   # звёзды для игры «Карточки»
-    save_user_stats()
+    with _stats_lock:
+        init_user_stats(user_id)
+        user_stats[user_id_str][stat_type] += 1
+        update_user_status(user_id)
+        cardgame.award_for_action(user_stats[user_id_str], stat_type)   # звёзды для игры «Карточки»
+        save_user_stats()
 
 # Единственный в своём роде статус. Выдаётся только вручную одному человеку
 # через /setstatus и никогда не рассчитывается автоматически.
@@ -780,9 +793,8 @@ async def _save_stats_snapshot(critical: bool = False) -> bool:
     Если critical=True (оплата) и ничего не вышло — пишем админам."""
     async with _stats_save_lock:
         for attempt in range(3):
-            snap = copy.deepcopy(user_stats)
             try:
-                await asyncio.to_thread(github_storage.save_stats, snap)
+                await asyncio.to_thread(_save_stats_locked)
                 return True
             except Exception:
                 logger.exception(f"❌ Ошибка при сохранении статистики (попытка {attempt + 1}/3)")
@@ -1181,11 +1193,12 @@ def _register_and_count(user_id: int, username, stat_type=None):
     через asyncio.to_thread, чтобы мини-апп не зависал, а бот не замирал для
     всех остальных, пока идут запросы к GitHub."""
     add_user_to_file(user_id)
-    init_user_stats(user_id)
-    if username:
-        user_stats[str(user_id)]["username"] = username
-    if stat_type:
-        increment_stat(user_id, stat_type)
+    with _stats_lock:
+        init_user_stats(user_id)
+        if username:
+            user_stats[str(user_id)]["username"] = username
+        if stat_type:
+            increment_stat(user_id, stat_type)
 
 
 async def _save_messages_async():
@@ -2090,6 +2103,12 @@ async def auto_start_live_job(context: ContextTypes.DEFAULT_TYPE):
         if d.strip().lower() in _DAY_NAME_TO_WEEKDAY
     }
     today_weekday = datetime.now(MOSCOW_TZ).weekday()
+
+    # Админ задал своё время через мини-апп — расписание не трогаем,
+    # live включится сам, когда это время наступит (_apply_stream_override_expiry).
+    _apply_stream_override_expiry()
+    if stream_override_target is not None:
+        return
 
     if today_weekday in weekdays:
         stream_is_live = True
