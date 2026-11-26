@@ -16,7 +16,11 @@
 import asyncio
 import logging
 import math
+import os
 import random
+import re
+import shutil
+import tempfile
 import time
 from collections import Counter, OrderedDict, deque
 
@@ -1451,7 +1455,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t = g.teams.get(tid)
         if not t:
             return
-        _log(t, uid, "Админ", _log_text(msg, info), info[0], admin=True)
+        _log(t, uid, "Админ", _log_text(msg, info), info[0], admin=True, media=_media_of(msg, info))
         await asyncio.gather(*(_relay_one(bot, m, msg, "👑 Админ", info) for m in t["members"]))
         return
 
@@ -1483,7 +1487,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if err:
         await msg.reply_text(err)
         return
-    _log(team, uid, name, _log_text(msg, info), info[0])
+    _log(team, uid, name, _log_text(msg, info), info[0], media=_media_of(msg, info))
     targets = [(m, f"👤 {name}") for m in team["members"] if m != uid]
     targets += [(a, f"#{tid} {name}") for a in _admins_of(g, tid)]
     await asyncio.gather(*(_relay_one(bot, to, msg, label, info) for to, label in targets))
@@ -2115,6 +2119,29 @@ def _uname(user):
     return user.get("first_name") or (f"@{user['username']}" if user.get("username") else str(user.get("id")))
 
 
+def _media_of(msg, info):
+    """Вложение сообщения из бота для журнала чата (чтобы mini app мог его показать)."""
+    kind = info[0]
+    if kind == "text":
+        return None
+    fid, mime = _file_meta(msg, kind)
+    if not fid:
+        return None
+    return {"file_id": fid, "mime": mime, "chat_id": msg.chat_id, "message_id": msg.message_id}
+
+
+def _chat_view(e):
+    """Запись журнала для mini app: без file_id, с признаком медиа."""
+    v = {k: e.get(k) for k in ("n", "uid", "name", "mtype", "admin", "ts")}
+    text = e.get("text") or ""
+    m = e.get("media")
+    if m:
+        text = re.sub(r"^\[\w+\]\s*", "", text)
+        v["media"] = {"mtype": e.get("mtype"), "mime": m.get("mime"), "has_file": bool(m.get("file_id"))}
+    v["text"] = text
+    return v
+
+
 def _log_text(msg, info):
     kind = info[0]
     if kind == "text":
@@ -2122,12 +2149,15 @@ def _log_text(msg, info):
     return f"[{kind}] {msg.caption or ''}".strip()
 
 
-def _log(t, uid, name, text, mtype="text", admin=False):
-    """Запись в журнал чата команды (его показывает mini app)."""
+def _log(t, uid, name, text, mtype="text", admin=False, media=None):
+    """Запись в журнал чата команды (его показывает mini app). media — {file_id, mime, chat_id, message_id}."""
     log = t.setdefault("log", [])
     t["log_n"] = t.get("log_n", 0) + 1
-    log.append({"n": t["log_n"], "uid": uid, "name": name, "text": text, "mtype": mtype,
-                "admin": admin, "ts": int(time.time())})
+    e = {"n": t["log_n"], "uid": uid, "name": name, "text": text, "mtype": mtype,
+         "admin": admin, "ts": int(time.time())}
+    if media:
+        e["media"] = media
+    log.append(e)
     if len(log) > LOG_MAX:
         del log[:-LOG_MAX]
     _touch()
@@ -2176,7 +2206,7 @@ def api_state(user):
         out["team"] = {
             "id": tid, "members": [{"id": u, "name": g.players.get(u, str(u))} for u in team["members"]],
             "submitted": bool(team["sub"]), "answer": _sub_view(team["sub"], tid),
-            "chat": team.get("log", [])[-100:] if g.phase in ("work", "moderation") else [],
+            "chat": [_chat_view(e) for e in team.get("log", [])[-100:]] if g.phase in ("work", "moderation") else [],
             "chat_open": g.phase in ("work", "moderation"),
             "typing": [g.players.get(u, str(u)) for u in team["members"]
                        if u != uid and time.time() - g.typing.get(u, 0) < TYPING_TTL],
@@ -2609,7 +2639,12 @@ async def api_media(user, tid):
                or (g.phase in ("voting", "finished") and tid in g.order))
     if not allowed:
         return None
-    fid = sub["file_id"]
+    return await _dl(sub["file_id"], sub.get("mime"), tid)
+
+
+async def _dl(fid, mime, tid=0):
+    """Скачать файл из Telegram (с кэшем в памяти). (bytes, mime) или None."""
+    global _media_cache_size
     if fid in _media_cache:
         _media_cache.move_to_end(fid)
         return _media_cache[fid]
@@ -2617,9 +2652,9 @@ async def api_media(user, tid):
         f = await _app.bot.get_file(fid)
         data = bytes(await f.download_as_bytearray())
     except TelegramError:
-        logger.warning("Ситуации: не удалось скачать файл ответа команды %s", tid)
+        logger.warning("Ситуации: не удалось скачать файл команды %s", tid)
         return None
-    res = (data, sub.get("mime") or "application/octet-stream")
+    res = (data, mime or "application/octet-stream")
     if len(data) <= MEDIA_CACHE_BYTES:
         _media_cache[fid] = res
         _media_cache_size += len(data)
@@ -2627,6 +2662,164 @@ async def api_media(user, tid):
             _, (old, _m) = _media_cache.popitem(last=False)
             _media_cache_size -= len(old)
     return res
+
+
+async def api_chat_media(user, tid, n):
+    """Вложение из чата команды (гс, кружок, фото…). (bytes, mime) или None."""
+    g = G
+    uid = int(user["id"])
+    t = g.teams.get(tid) if g else None
+    if not t or _app is None or not (uid in ADMINS or uid in t["members"]):
+        return None
+    e = next((x for x in t.get("log", []) if x["n"] == n), None)
+    m = e.get("media") if e else None
+    if not m or not m.get("file_id"):
+        return None
+    return await _dl(m["file_id"], m.get("mime"), tid)
+
+
+
+# ------------------------------------------------------------------
+# Загрузка вложений прямо из mini app (гс, кружок, фото, видео, аудио)
+# ------------------------------------------------------------------
+UP_TYPES = ("photo", "voice", "video_note", "video", "audio")
+STORAGE_CHAT = int(os.environ.get("SIT_STORAGE_CHAT", "0") or 0)   # чат-хранилище файлов; иначе — личка игрока
+_EXT = {"audio/mp4": "m4a", "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/webm": "webm", "audio/aac": "aac",
+        "video/mp4": "mp4", "video/webm": "webm", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+
+
+async def _ffmpeg(args, data, ext_in, ext_out):
+    """Прогнать байты через ffmpeg. bytes или None."""
+    with tempfile.TemporaryDirectory() as d:
+        pin, pout = os.path.join(d, "in." + ext_in), os.path.join(d, "out." + ext_out)
+        with open(pin, "wb") as f:
+            f.write(data)
+        try:
+            p = await asyncio.create_subprocess_exec("ffmpeg", "-y", "-loglevel", "error", "-i", pin, *args, pout,
+                                                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await asyncio.wait_for(p.wait(), 45)
+        except Exception:
+            return None
+        if p.returncode != 0 or not os.path.exists(pout):
+            return None
+        with open(pout, "rb") as f:
+            return f.read()
+
+
+async def _transcode(data, mtype, mime):
+    """webm → m4a/mp4 (Safari/iOS не играют webm); кружок — квадрат 384×384. Без ffmpeg отдаём как есть."""
+    base = (mime or "").split(";")[0].strip().lower()
+    if not shutil.which("ffmpeg"):
+        return data, base
+    try:
+        if mtype in ("voice", "audio") and base in ("audio/webm", "video/webm", "audio/ogg"):
+            out = await _ffmpeg(["-vn", "-c:a", "aac", "-b:a", "64k"], data, _EXT.get(base, "webm"), "m4a")
+            if out:
+                return out, "audio/mp4"
+        if mtype in ("video_note", "video") and (base != "video/mp4" or mtype == "video_note"):
+            vf = ["-vf", "crop=min(iw\\,ih):min(iw\\,ih),scale=384:384", "-t", "60"] if mtype == "video_note" else []
+            out = await _ffmpeg([*vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+                                 "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"],
+                                data, _EXT.get(base, "webm"), "mp4")
+            if out:
+                return out, "video/mp4"
+    except Exception:
+        logger.exception("Ситуации: ошибка перекодирования")
+    return data, base
+
+
+def _fid_kind(msg):
+    for attr in ("photo", "voice", "video_note", "video", "audio", "animation", "document"):
+        v = getattr(msg, attr, None)
+        if v:
+            return (v[-1] if attr == "photo" else v).file_id, attr
+    return None, None
+
+
+async def _upload_send(bot, dest, mtype, mime, data, caption):
+    """Отправить файл в чат-хранилище. Сообщение или None. Если Telegram не принял тип — шлём документом."""
+    from telegram import InputFile
+    ext = _EXT.get(mime, "bin")
+    f = InputFile(data, filename=f"{mtype}.{ext}")
+    kw = dict(chat_id=dest, disable_notification=True, write_timeout=60, read_timeout=60)
+    cap = {"caption": caption} if caption else {}
+    try:
+        if mtype == "photo":
+            return await bot.send_photo(photo=f, **cap, **kw)
+        if mtype == "voice" and mime in ("audio/ogg", "audio/mpeg", "audio/mp4"):
+            return await bot.send_voice(voice=f, **cap, **kw)
+        if mtype == "video_note" and mime == "video/mp4":
+            return await bot.send_video_note(video_note=f, **kw)
+        if mtype == "video" and mime == "video/mp4":
+            return await bot.send_video(video=f, supports_streaming=True, **cap, **kw)
+        if mtype == "audio" and mime in ("audio/mpeg", "audio/mp4"):
+            return await bot.send_audio(audio=f, **cap, **kw)
+    except TelegramError:
+        logger.info("Ситуации: тип %s не принят, шлём документом", mtype)
+    try:
+        return await bot.send_document(document=InputFile(data, filename=f"{mtype}.{ext}"), **cap, **kw)
+    except TelegramError:
+        logger.warning("Ситуации: не удалось загрузить файл из mini app", exc_info=True)
+        return None
+
+
+async def api_upload(user, kind, mtype, mime, data, caption):
+    """Вложение из mini app: kind=chat — в чат команды, kind=submit — как ответ команды."""
+    g = G
+    uid = int(user["id"])
+    if _app is None or g is None:
+        return {"ok": False, "error": "Сейчас игра «Ситуации» не идёт"}
+    if kind not in ("chat", "submit") or mtype not in UP_TYPES:
+        return {"ok": False, "error": "Некорректный запрос"}
+    if not data:
+        return {"ok": False, "error": "Пустой файл"}
+    if len(data) > MAX_MEDIA_BYTES:
+        return {"ok": False, "error": f"Файл слишком большой (максимум {MAX_MEDIA_BYTES // (1024 * 1024)} МБ)"}
+    tid = g.user_team.get(uid)
+    team = g.teams.get(tid) if tid else None
+    if team is None:
+        return {"ok": False, "error": "Ты не в команде"}
+    if kind == "submit" and g.phase != "work":
+        return {"ok": False, "error": "Сдача ответов закрыта. Нужно поправить — «Связь с админом»"}
+    if kind == "chat" and g.phase not in ("work", "moderation"):
+        return {"ok": False, "error": "Чат сейчас недоступен"}
+    if kind == "chat" and _flood(uid, "chat", *CHAT_FLOOD):
+        return {"ok": False, "error": "Не так быстро 🙂"}
+    bot = _app.bot
+    name = g.players.get(uid) or _uname(user)
+    caption = _clean(caption, 900)
+    data, mime = await _transcode(data, mtype, mime)
+    dest = STORAGE_CHAT or uid
+    sent = await _upload_send(bot, dest, mtype, mime, data, f"#{tid} {name}" if STORAGE_CHAT else None)
+    fid, sk = _fid_kind(sent) if sent else (None, None)
+    if not fid:
+        return {"ok": False, "error": "Не удалось загрузить файл" if STORAGE_CHAT else
+                "Не удалось загрузить файл. Открой чат с ботом, нажми Start и повтори"}
+    cap_ok = sk != "video_note"
+    if kind == "submit":
+        team["sub"] = {"kind": "media", "text": None, "caption": caption or None, "cap_ok": cap_ok,
+                       "chat_id": sent.chat_id, "message_id": sent.message_id, "by": name, "mtype": mtype,
+                       "file_id": fid, "mime": mime, "ts": time.time()}
+        team["kept"] = None
+        g.pending.pop(uid, None)
+        await _send_many(bot, [m for m in team["members"] if m != uid], f"✅ {name} сдал(а) ответ команды.")
+        _touch()
+        await _maybe_all_done(bot)
+    else:
+        _log(team, uid, name, caption, mtype,
+             media={"file_id": fid, "mime": mime, "chat_id": sent.chat_id, "message_id": sent.message_id})
+        targets = [(m, f"👤 {name}") for m in team["members"] if m != uid and m in g.in_chat]
+        targets += [(a, f"#{tid} {name}") for a in _admins_of(g, tid)]
+
+        async def _fwd(to, label):
+            if cap_ok:
+                await _copy(bot, to, sent.chat_id, sent.message_id,
+                            caption=(label + (f": {caption}" if caption else ""))[:1024])
+            else:
+                await _send(bot, to, f"{label}:")
+                await _copy(bot, to, sent.chat_id, sent.message_id)
+        await asyncio.gather(*(_fwd(to, label) for to, label in targets))
+    return {"ok": True, "state": api_state(user)}
 
 
 # ------------------------------------------------------------------
