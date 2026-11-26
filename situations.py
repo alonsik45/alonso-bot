@@ -145,6 +145,8 @@ class Game:
         self.admin_chat = {}       # admin uid -> tid (с какой командой админ сейчас в чате)
         self.last_req = {}         # tid -> время последнего запроса «связь с админом»
         self.cards = {}            # "admin:tid" -> message_id карточки ответа у админа
+        self.reacts = {}           # uid -> {tid: эмодзи} (реакции в голосовании, mini app)
+        self.typing = {}           # uid -> время последнего «печатает…» (mini app)
         self.web = set()           # игроки, зашедшие через mini app (их недоступность в чате не выкидывает из игры)
 
     def rebuild(self):
@@ -865,6 +867,7 @@ async def _close_lobby(bot):
     g.extended = False
     g.stats_done = False
     g.votes.clear()
+    g.reacts.clear()
     g.voters.clear()
     g.order = []
     g.phase = "picking"
@@ -1546,6 +1549,7 @@ async def _start_voting(bot):
     g.order = [tid for tid, t in g.teams.items() if t["sub"] and t["kept"] is True]
     random.shuffle(g.order)
     g.votes.clear()
+    g.reacts.clear()
     g.voters.clear()
     g.phase = "voting"
     await _close_all_links(bot)
@@ -2145,6 +2149,7 @@ def _ranking(g):
     order = sorted(g.order, key=lambda t: -cnt.get(t, 0))
     top = cnt.get(order[0], 0) if order else 0
     return [{"tid": t, "members": [g.players.get(u, str(u)) for u in g.teams[t]["members"]],
+             "member_ids": list(g.teams[t]["members"]),
              "votes": cnt.get(t, 0), "winner": top > 0 and cnt.get(t, 0) == top,
              "answer": _sub_view(g.teams[t]["sub"], t)} for t in order]
 
@@ -2173,6 +2178,8 @@ def api_state(user):
             "submitted": bool(team["sub"]), "answer": _sub_view(team["sub"], tid),
             "chat": team.get("log", [])[-100:] if g.phase in ("work", "moderation") else [],
             "chat_open": g.phase in ("work", "moderation"),
+            "typing": [g.players.get(u, str(u)) for u in team["members"]
+                       if u != uid and time.time() - g.typing.get(u, 0) < TYPING_TTL],
         }
     if g.phase == "picking":
         out["picking"] = {
@@ -2183,8 +2190,17 @@ def api_state(user):
             "my_suggestion": g.suggestions.get(uid), "sg_closed": g.sg_closed,
         }
     if g.phase == "voting":
+        rc = {t: Counter() for t in g.order}
+        for r in g.reacts.values():
+            for t, e in r.items():
+                if t in rc:
+                    rc[t][e] += 1
+        my_r = g.reacts.get(uid, {})
         out["answers"] = [{"tid": t, "n": i + 1, "mine": uid in g.teams[t]["members"],
-                           "answer": _sub_view(g.teams[t]["sub"], t)} for i, t in enumerate(g.order)]
+                           "answer": _sub_view(g.teams[t]["sub"], t),
+                           "reactions": {e: rc[t][e] for e in REACT_EMOJI if rc[t][e]},
+                           "my_react": my_r.get(t)} for i, t in enumerate(g.order)]
+        out["react_set"] = list(REACT_EMOJI)
         out["my_vote"] = g.votes.get(uid)
     if g.phase == "finished" and g.order:
         out["results"] = _ranking(g)
@@ -2209,6 +2225,18 @@ def api_state(user):
             "notify_wait": max(0, int(NOTIFY_COOLDOWN - (time.time() - g.last_notify))),
         }
     return out
+
+
+REACT_EMOJI = ("😂", "🔥", "👏", "💀")
+TYPING_TTL = 5
+
+
+def api_avatar_ok(viewer_uid, target_uid):
+    """Можно ли показать аватар target_uid игроку viewer_uid: оба в текущей комнате (или viewer — админ)."""
+    g = G
+    if g is None:
+        return False
+    return (viewer_uid in ADMINS or viewer_uid in g.players) and (target_uid in g.players)
 
 
 def _clean(text, limit):
@@ -2351,6 +2379,27 @@ async def _api_player(user, action, p, extra):
         if m is None:
             g.pending.pop(uid, None)
             return "Не получилось написать тебе в бот: открой чат с ботом, нажми Start и повтори"
+        return None
+
+    if action == "typing":
+        if team is not None and g.phase in ("work", "moderation"):
+            g.typing[uid] = time.time()
+        return None
+
+    if action == "react":
+        if g.phase != "voting":
+            return "Реакции сейчас недоступны"
+        t = int(p.get("tid"))
+        e = str(p.get("emoji") or "")
+        if t not in g.order or e not in REACT_EMOJI:
+            return "Нет такого ответа"
+        if uid in g.teams[t]["members"]:
+            return "За свою команду реагировать нельзя 🙂"
+        mine = g.reacts.setdefault(uid, {})
+        if mine.get(t) == e:
+            mine.pop(t, None)
+        else:
+            mine[t] = e
         return None
 
     if action == "contact":
