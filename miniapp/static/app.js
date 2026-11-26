@@ -17,6 +17,13 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const escapeHtml = esc;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function errMsg(detail, fallback) { return (typeof detail === 'string' && detail) ? detail : fallback; }
+// confirm() в Telegram WebView местами молча возвращает false — используем нативный диалог Telegram
+function askConfirm(msg) {
+  return new Promise(res => {
+    if (tg?.showConfirm) { try { tg.showConfirm(msg, ok => res(!!ok)); return; } catch (e) { /* старый клиент */ } }
+    res(window.confirm(msg));
+  });
+}
 
 /* ── Toast (текст вставляется как textContent — безопасно для ников и ответов сервера) ── */
 function showToast(msg, type = 'success') {
@@ -377,7 +384,7 @@ async function adminBan() {
     return;
   }
 
-  if (!confirm(`⚠️ Уверен, что хочешь забанить пользователя ${userId}?`)) return;
+  if (!(await askConfirm(`⚠️ Уверен, что хочешь забанить пользователя ${userId}?`))) return;
 
   try {
     const initData = tg?.initData;
