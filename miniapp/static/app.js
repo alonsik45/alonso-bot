@@ -60,7 +60,8 @@ function goTo(id) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-pill-btn[data-section]').forEach(b => b.classList.remove('active'));
   $id(id)?.classList.add('active');
-  document.querySelector(`.nav-pill-btn[data-section="${id}"]`)?.classList.add('active');
+  const navId = (id === 'game' || id === 'sit') ? 'games' : id;
+  document.querySelector(`.nav-pill-btn[data-section="${navId}"]`)?.classList.add('active');
   window.scrollTo({ top: 0, behavior: 'smooth' });
   document.body.classList.toggle('ai-open', id === 'ai');
   if (id === 'profile') loadProfile();
@@ -69,6 +70,8 @@ function goTo(id) {
   if (id === 'ai') aiRender();
   if (id === 'admin') { loadChbdStatusAdmin(); loadTrashStatusAdmin(); }
   if (id === 'game' && window.loadGame) loadGame();
+  if (id === 'sit' && window.sitOpen) sitOpen(); else if (window.sitClose) sitClose();
+  if (id === 'games' && window.sitPeek) sitPeek();
 }
 function goToTab(sectionId, tabId) {
   goTo(sectionId);
@@ -1159,6 +1162,7 @@ document.addEventListener('DOMContentLoaded', () => {
   checkIsAdmin();
   // ссылка из меню бота: ?section=friends открывает игру на под-вкладке «Друзья»
   if (new URLSearchParams(location.search).get('section') === 'friends') goToTab('game', 'g-friends');
+  if (new URLSearchParams(location.search).get('section') === 'sit') goTo('sit');
   const u = tg?.initDataUnsafe?.user;
   if (u) {
     const un = $id('user-name'); if (un) un.textContent = u.username ? '@' + u.username : (u.first_name || 'Ты');
