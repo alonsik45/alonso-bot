@@ -6,7 +6,7 @@
 (function () {
   const POLL_MS = 2500;
   let S = null;              // последнее состояние
-  let pollT = null, tickT = null, busy = false, lastSig = '', endAt = 0, totalSec = 0;
+  let pollT = null, tickT = null, busy = false, lastSig = '', endAt = 0, totalSec = 0, seq = 0, applied = 0;
   let vIdx = 0;              // какой ответ листается при голосовании
   let adminOpen = false;
   const MODES = { manual: 'Вручную', random: 'Случайная', suggest: 'Идеи игроков', vote: 'Голосование' };
@@ -15,6 +15,7 @@
 
   async function call(action, payload, quiet) {
     if (!tg?.initData) { if (!quiet) showToast('Открой приложение через Telegram', 'error'); return null; }
+    const my = ++seq;
     try {
       const res = await fetch('/api/sit/' + action, {
         method: 'POST',
@@ -23,7 +24,7 @@
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) { if (!quiet) showToast(errMsg(d.detail, 'Ошибка'), 'error'); return null; }
-      if (d.state) apply(d.state);
+      if (d.state && my >= applied) { applied = my; apply(d.state); }
       return d;
     } catch (e) { console.error(e); if (!quiet) showToast('Ошибка сети', 'error'); return null; }
   }
@@ -37,14 +38,16 @@
   window.sitP = (a, p, m) => act(a, p, m);
 
   function apply(st) {
+    const pp = S && S.phase, pr = S && S.round;
     S = st;
     if (S.phase === 'work') {
       const left = S.work_left || 0;
       endAt = Date.now() + left * 1000;
+      if (pp !== 'work' || pr !== S.round) totalSec = 0;
       totalSec = Math.max(totalSec, left, (S.work_minutes || 0) * 60);
     }
-    const sig = JSON.stringify(S, (k, v) => (k === 'work_left' ? undefined : v)) + '|' + vIdx + '|' + adminOpen;
-    if (sig !== lastSig) { lastSig = sig; render(); }
+    const sig = JSON.stringify(S, (k, v) => (k === 'work_left' || k === 'chat' || k === 'typing' ? undefined : v)) + '|' + vIdx + '|' + adminOpen;
+    if (sig !== lastSig) { lastSig = sig; render(); } else updateChat();
   }
 
   /* ── жизненный цикл ── */
@@ -54,7 +57,7 @@
     clearInterval(pollT); pollT = setInterval(() => { if (!document.hidden) call('state', {}, true); }, POLL_MS);
     clearInterval(tickT); tickT = setInterval(tick, 1000);
   };
-  window.sitClose = function () { clearInterval(pollT); clearInterval(tickT); pollT = tickT = null; };
+  window.sitClose = function () { if (window.sitRecCancel) sitRecCancel(); clearInterval(pollT); clearInterval(tickT); pollT = tickT = null; };
   window.sitPeek = async function () {           // метка LIVE на карточке в «Играх»
     const el = $id('hub-sit-live'); if (!el || !tg?.initData) return;
     try {
@@ -95,19 +98,24 @@
   }
   const pl = (n, me, id) => `<div class="sit-pl${me ? ' me' : ''}">${av(id, n)}<span>${esc(n)}</span></div>`;
 
+  function mediaEl(mtype, mime, url, hasFile) {
+    mime = mime || '';
+    if (!hasFile) return '<i>Медиа</i>';
+    if (mtype === 'photo' || (mime.startsWith('image/') && !mime.includes('tgsticker'))) return `<img src="${url}" alt="" loading="lazy">`;
+    if (mtype === 'video_note') return `<video class="round" src="${url}" controls playsinline preload="metadata"></video>`;
+    if (mtype === 'video' || mtype === 'animation' || mime.startsWith('video/')) return `<video src="${url}" controls playsinline preload="metadata"></video>`;
+    if (mtype === 'voice' || mtype === 'audio' || mime.startsWith('audio/')) return `<audio src="${url}" controls preload="metadata"></audio>`;
+    if (mime.includes('tgsticker')) return '<i>🎭 Анимированный стикер</i>';
+    return `<a href="${url}" target="_blank" style="color:var(--s-cyan)">📎 Открыть файл</a>`;
+  }
+
   function answerHtml(a, tid) {
     if (!a) return '<div class="sit-ans" style="color:var(--muted-fg)">Ответа пока нет</div>';
     let h = '';
     if (a.kind === 'text') h = esc(a.text || '');
     else {
       const url = `/api/sit/media/${tid}?v=${a.ver}&init=${encodeURIComponent(tg?.initData || '')}`;
-      if (a.has_file) {
-        const m = a.mtype, mime = a.mime || '';
-        if (m === 'photo' || mime.startsWith('image/') && !mime.includes('tgsticker')) h += `<img src="${url}" alt="" loading="lazy">`;
-        else if (m === 'video' || m === 'video_note' || mime.startsWith('video/')) h += `<video src="${url}" controls playsinline preload="metadata"></video>`;
-        else if (m === 'voice' || m === 'audio' || mime.startsWith('audio/')) h += `<audio src="${url}" controls preload="metadata"></audio>`;
-        else h += `<a href="${url}" target="_blank" style="color:var(--s-cyan)">📎 Открыть файл</a>`;
-      } else h += '<i>Медиа</i>';
+      h += mediaEl(a.mtype, a.mime, url, a.has_file);
       if (a.caption) h += `<div class="cap">${esc(a.caption)}</div>`;
     }
     return `<div class="sit-ans">${h}</div>`;
@@ -181,15 +189,36 @@
     return h;
   }
 
+  function msgHtml(m) {
+    const mine = m.uid === S.uid;
+    const url = m.media ? `/api/sit/chatmedia/${S.team.id}/${m.n}?init=${encodeURIComponent(tg?.initData || '')}` : '';
+    const body = (m.media ? `<div class="mm">${mediaEl(m.media.mtype, m.media.mime, url, m.media.has_file)}</div>` : '')
+      + (m.text ? `<div>${esc(m.text)}</div>` : '');
+    return `<div class="sit-msg${mine ? ' me' : ''}${m.admin ? ' adm' : ''}${m.media ? ' media' : ''}">${mine ? '' : `<small>${esc(m.name)}${m.admin ? ' (ведущий)' : ''}</small>`}${body}</div>`;
+  }
+  const typingHtml = names => names && names.length ? `<i></i><i></i><i></i> ${esc(names.join(', '))} печатает…` : '';
   function chatHtml() {
-    const t = S.team;
-    const msgs = (t.chat || []).map(m => {
-      const mine = m.uid === S.uid;
-      return `<div class="sit-msg${mine ? ' me' : ''}${m.admin ? ' adm' : ''}">${mine ? '' : `<small>${esc(m.name)}${m.admin ? ' (ведущий)' : ''}</small>`}${esc(m.text)}</div>`;
-    }).join('') || '<div class="sit-note">Пока тихо — предложи первую идею 👇</div>';
-    const ty = (t.typing || []).length ? `<div class="sit-typing"><i></i><i></i><i></i> ${esc(t.typing.join(', '))} печатает…</div>` : '<div class="sit-typing off"></div>';
-    return `<div class="sit-card"><div class="sit-lbl">💬 Командный чат</div><div class="sit-chat" id="sit-chat">${msgs}</div>${ty}
-      ${t.chat_open ? `<div class="sit-send"><textarea class="sit-in" id="sit-cin" rows="1" placeholder="Идея для сценки…" maxlength="3800"></textarea><button class="sit-go" onclick="sitChat()">➤</button></div>` : ''}</div>`;
+    const t = S.team, list = t.chat || [];
+    const msgs = list.map(msgHtml).join('') || '<div class="sit-note">Пока тихо — предложи первую идею 👇</div>';
+    const last = list.length ? list[list.length - 1].n : 0;
+    return `<div class="sit-card"><div class="sit-lbl">💬 Командный чат</div><div class="sit-chat" id="sit-chat" data-last="${last}">${msgs}</div>
+      <div class="sit-typing${(t.typing || []).length ? '' : ' off'}" id="sit-typing">${typingHtml(t.typing)}</div>
+      ${t.chat_open ? `<div class="sit-send"><button class="sit-tool" onclick="sitRec('voice')" aria-label="Голосовое">🎙</button><button class="sit-tool" onclick="sitRec('circle')" aria-label="Кружок">⭕</button><button class="sit-tool" onclick="sitPick()" aria-label="Фото или файл">📎</button>
+        <textarea class="sit-in" id="sit-cin" rows="1" placeholder="Идея для сценки…" maxlength="3800"></textarea><button class="sit-go" onclick="sitChat()">➤</button></div>` : ''}</div>`;
+  }
+  function updateChat() {                      // дописываем новые сообщения, не трогая уже играющие гс/видео
+    const box = $id('sit-chat'); if (!box || !S || !S.team) return;
+    const list = S.team.chat || [], have = +box.dataset.last || 0;
+    const fresh = list.filter(m => m.n > have);
+    if (fresh.length) {
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.querySelector('.sit-note')?.remove();
+      box.insertAdjacentHTML('beforeend', fresh.map(msgHtml).join(''));
+      box.dataset.last = list[list.length - 1].n;
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    }
+    const ty = $id('sit-typing');
+    if (ty) { const names = S.team.typing || []; ty.innerHTML = typingHtml(names); ty.classList.toggle('off', !names.length); }
   }
   window.sitChat = async () => {
     const el = $id('sit-cin'); const v = el?.value.trim(); if (!v) return;
@@ -213,14 +242,16 @@
     if (t.submitted) h += `<div style="margin-top:10px">${answerHtml(t.answer, t.id)}</div>`;
     h += `<textarea class="sit-in" id="sit-ans" rows="4" style="width:100%;margin-top:10px" maxlength="3800" placeholder="Текст ответа команды (сценка, диалог, описание)…"></textarea>
       <button class="sit-btn" onclick="sitSubmit()">${t.submitted ? 'Заменить ответ' : 'Сдать ответ'}</button>
-      <button class="sit-btn sec" onclick="sitP('submit_media',{},'Открой чат с ботом и пришли фото/видео/гс')">📎 Сдать фото / видео / голос</button>
+      <div class="sit-lbl" style="margin-top:14px">Или сдать записью</div>
+      <div class="sit-row three"><button class="sit-btn sec" onclick="sitRec('voice')">🎙 Голос</button><button class="sit-btn sec" onclick="sitRec('circle')">⭕ Кружок</button><button class="sit-btn sec" onclick="sitPick()">📷 Фото</button></div>
       <div class="sit-note">Пересдать можно до конца таймера</div></div>`;
     h += `<div class="sit-row"><button class="sit-btn sec" onclick="sitP('contact')">🆘 Ведущий / SOS</button>
       <button class="sit-btn sec" onclick="sitQuit()">🚪 Выйти из игры</button></div>`;
     return h;
   }
   window.sitSubmit = () => { const v = $id('sit-ans')?.value.trim(); if (!v) return showToast('Напиши ответ', 'error'); sitP('submit', { text: v }, 'Ответ сдан ✅').then(d => { if (d) dSet(''); }); };
-  window.sitQuit = () => { if (confirm('Точно выйти из игры?')) sitP('quit'); };
+  window.sitQuit = async () => { if (await askConfirm('Точно выйти из игры?')) sitP('quit'); };
+  window.sitStop = async () => { if (await askConfirm('Остановить игру?')) sitA('stop'); };
 
   function vModeration() {
     let h = banner('Фаза: проверка', 'Ведущий смотрит ответы', 'Скоро начнётся голосование', '🔍');
@@ -302,12 +333,126 @@
           ${t.submitted ? `<span style="display:flex;gap:6px"><button class="sit-btn sm ${t.kept === false ? '' : 'sec'}" onclick="sitA('keep',{tid:${t.id},keep:false})">✕</button><button class="sit-btn sm ${t.kept === true ? '' : 'sec'}" onclick="sitA('keep',{tid:${t.id},keep:true})">✓</button></span>` : ''}</div>`).join('')
         + '<div class="sit-row"><button class="sit-btn sec" onclick="sitA(\'keepall\')">Оставить все</button><button class="sit-btn" onclick="sitA(\'startvote\')">Начать голосование</button></div>';
       if (ph === 'voting') b += `<div class="sit-note" style="text-align:left">Проголосовало: ${ad.voted_count}</div><button class="sit-btn" onclick="sitA('endvote')">🏁 Завершить голосование</button>`;
-      b += '<button class="sit-btn sec" onclick="if(confirm(\'Остановить игру?\'))sitA(\'stop\')">⏹ Остановить игру</button>';
+      b += '<button class="sit-btn sec" onclick="sitStop()">⏹ Остановить игру</button>';
     }
     return `<div class="sit-adm"><div class="sit-lbl" style="cursor:pointer" onclick="sitAdm()">👑 Панель ведущего ${adminOpen ? '▾' : '▸'}</div>${adminOpen ? b : ''}</div>`;
   }
   window.sitAdm = () => { adminOpen = !adminOpen; lastSig = ''; render(); };
-  window.sitOwn = () => { const t = prompt('Текст ситуации:'); if (t && t.trim()) sitA('own', { text: t.trim() }); };
+  window.sitOwn = () => {
+    sheet(`<div class="sit-lbl">✍️ Своя ситуация</div><textarea class="sit-in" id="sit-own" rows="4" maxlength="800" placeholder="Текст ситуации" style="width:100%;margin-top:10px"></textarea>
+      <div class="sit-row"><button class="sit-btn sec" onclick="sitRecCancel()">Отмена</button><button class="sit-btn" onclick="sitOwnOk()">Выбрать</button></div>`);
+    setTimeout(() => $id('sit-own')?.focus(), 80);
+  };
+  window.sitOwnOk = () => { const t = $id('sit-own')?.value.trim(); if (!t) return showToast('Напиши ситуацию', 'error'); closeSheet(); sitA('own', { text: t }); };
+
+  /* ── вложения из приложения: гс / кружок / фото / файл ── */
+  const MAX_MB = 20;
+  let rec = null, pend = null;
+  const pickMime = list => { try { return list.find(t => MediaRecorder.isTypeSupported(t)) || ''; } catch (e) { return ''; } };
+  function sheet(html) {
+    let el = $id('sit-sheet');
+    if (!html) { el?.remove(); return; }
+    if (!el) { el = document.createElement('div'); el.id = 'sit-sheet'; el.className = 'sit-sheet'; document.body.appendChild(el); }
+    el.innerHTML = `<div class="sit-sheet-in">${html}</div>`;
+  }
+  function closeSheet() { if (pend?.url) URL.revokeObjectURL(pend.url); pend = null; sheet(''); }
+  function stopTracks(r) { if (r) { clearInterval(r.timer); try { r.stream.getTracks().forEach(t => t.stop()); } catch (e) { /* уже остановлены */ } } }
+  window.sitRecCancel = function () {
+    if (rec) { rec.cancelled = true; try { if (rec.mr.state !== 'inactive') rec.mr.stop(); } catch (e) { /* ok */ } stopTracks(rec); rec = null; }
+    closeSheet();
+  };
+  window.sitRecStop = () => { if (rec && rec.mr.state !== 'inactive') rec.mr.stop(); };
+  window.sitRec = async function (kind) {
+    if (rec || pend) return;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { showToast('Запись тут не поддерживается — прикрепи файл кнопкой 📎', 'error'); return; }
+    const circle = kind === 'circle';
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(circle
+        ? { audio: true, video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 480 } } } : { audio: true });
+    } catch (e) { showToast(circle ? 'Нет доступа к камере или микрофону' : 'Нет доступа к микрофону', 'error'); return; }
+    const mime = pickMime(circle ? ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+                                 : ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']);
+    let mr;
+    try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (e) { stream.getTracks().forEach(t => t.stop()); showToast('Запись тут не поддерживается — прикрепи файл кнопкой 📎', 'error'); return; }
+    const r = rec = { stream, mr, chunks: [], t0: Date.now(), cancelled: false, timer: null };
+    mr.ondataavailable = e => { if (e.data && e.data.size) r.chunks.push(e.data); };
+    mr.onstop = () => {
+      stopTracks(r);
+      if (r.cancelled) return;
+      rec = null;
+      const blob = new Blob(r.chunks, { type: mr.mimeType || mime || (circle ? 'video/webm' : 'audio/webm') });
+      if (blob.size < 800) { closeSheet(); showToast('Запись слишком короткая', 'error'); return; }
+      if (blob.size > MAX_MB * 1024 * 1024) { closeSheet(); showToast('Запись слишком большая', 'error'); return; }
+      preview(blob, circle ? 'video_note' : 'voice');
+    };
+    sheet(`<div class="sit-lbl">${circle ? '⭕ Кружок (до 60 сек)' : '🎙 Голосовое (до 3 мин)'}</div>
+      ${circle ? '<video id="sit-live" class="round big" autoplay muted playsinline></video>' : ''}
+      <div class="sit-recbar"><span class="sit-dot"></span><b id="sit-rt">00:00</b></div>
+      <div class="sit-row"><button class="sit-btn sec" onclick="sitRecCancel()">Отмена</button><button class="sit-btn" onclick="sitRecStop()">⏹ Готово</button></div>`);
+    if (circle) { const v = $id('sit-live'); if (v) { v.srcObject = stream; v.play?.().catch(() => {}); } }
+    mr.start(1000);
+    r.timer = setInterval(() => {
+      const sec = Math.round((Date.now() - r.t0) / 1000), el = $id('sit-rt');
+      if (el) el.textContent = fmt(sec);
+      if (sec >= (circle ? 60 : 180)) sitRecStop();
+    }, 500);
+  };
+
+  function preview(blob, mtype) { pend = { blob, mtype, url: URL.createObjectURL(blob), busy: false, cap: '' }; drawPreview(); }
+  function drawPreview() {
+    const p = pend; if (!p) return;
+    const el = p.mtype === 'photo' ? `<img src="${p.url}" alt="">`
+      : p.mtype === 'video_note' ? `<video class="round big" src="${p.url}" controls playsinline></video>`
+      : p.mtype === 'video' ? `<video src="${p.url}" controls playsinline></video>` : `<audio src="${p.url}" controls></audio>`;
+    const dis = p.busy ? ' disabled' : '';
+    sheet(`<div class="sit-lbl">Проверь перед отправкой</div><div class="sit-prev">${el}</div>
+      ${p.mtype === 'video_note' ? '' : `<input class="sit-in" id="sit-cap" maxlength="900" placeholder="Подпись (необязательно)" value="${esc(p.cap)}" style="width:100%;margin-top:10px">`}
+      <button class="sit-btn"${dis} onclick="sitUp('chat')">${p.busy ? 'Отправляю…' : '💬 Отправить в чат команды'}</button>
+      ${S && S.phase === 'work' ? `<button class="sit-btn cy"${dis} onclick="sitUp('submit')">✅ Сдать как ответ команды</button>` : ''}
+      <button class="sit-btn sec"${dis} onclick="sitRecCancel()">Отмена</button>`);
+  }
+  window.sitUp = async function (kind) {
+    const p = pend; if (!p || p.busy) return;
+    if (!tg?.initData) return showToast('Открой приложение через Telegram', 'error');
+    p.cap = $id('sit-cap')?.value.trim() || ''; p.busy = true; drawPreview();
+    const my = ++seq;
+    try {
+      const res = await fetch(`/api/sit/upload?kind=${kind}&mtype=${p.mtype}&caption=${encodeURIComponent(p.cap)}`, {
+        method: 'POST', headers: { 'Content-Type': p.blob.type || 'application/octet-stream', 'X-Telegram-Init-Data': tg.initData }, body: p.blob });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { showToast(errMsg(d.detail, 'Не удалось отправить'), 'error'); p.busy = false; drawPreview(); return; }
+      if (d.state && my >= applied) { applied = my; apply(d.state); }
+      closeSheet();
+      showToast(kind === 'submit' ? 'Ответ сдан ✅' : 'Отправлено ✅');
+    } catch (e) { console.error(e); showToast('Ошибка сети', 'error'); p.busy = false; drawPreview(); }
+  };
+  async function shrink(file) {              // фото до 1600px JPEG — быстрее грузится и всегда принимается
+    try {
+      const bmp = await createImageBitmap(file), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      return await new Promise(r => c.toBlob(b => r(b || file), 'image/jpeg', 0.85));
+    } catch (e) { return file; }
+  }
+  async function onFile(file) {
+    if (!file || rec || pend) return;
+    const t = file.type || '';
+    if (t.startsWith('image/')) preview(await shrink(file), 'photo');
+    else if (file.size > MAX_MB * 1024 * 1024) showToast('Файл больше ' + MAX_MB + ' МБ', 'error');
+    else if (t.startsWith('video/')) preview(file, 'video');
+    else if (t.startsWith('audio/')) preview(file, 'audio');
+    else showToast('Поддерживаются фото, видео и аудио', 'error');
+  }
+  window.sitPick = () => $id('sit-file')?.click();
+  (function () {                               // input вне #sit-root, чтобы перерисовка не сбила выбор файла
+    if ($id('sit-file')) return;
+    const fi = document.createElement('input');
+    fi.type = 'file'; fi.id = 'sit-file'; fi.accept = 'image/*,video/*,audio/*'; fi.hidden = true;
+    fi.addEventListener('change', () => { const f = fi.files && fi.files[0]; fi.value = ''; onFile(f); });
+    document.body.appendChild(fi);
+  })();
 
   /* ── черновик ответа и «печатает…» ── */
   const dKey = () => S && S.team ? `sitdraft_${S.round}_${S.team.id}_${S.uid}` : null;
