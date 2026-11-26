@@ -4083,6 +4083,8 @@ def main():
         sit_action=situations.api_action,
         sit_media=situations.api_media,
         sit_avatar_ok=situations.api_avatar_ok,
+        sit_upload=situations.api_upload,
+        sit_chat_media=situations.api_chat_media,
     ))
 
     miniapp_static_dir = os.path.join(
