@@ -444,19 +444,7 @@ def build_miniapp_router(
             raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
         return JSONResponse(result)
 
-    @router.post("/api/sit/{action}")
-    async def post_sit(action: str, payload: dict = Body(default={}),
-                       x_telegram_init_data: Optional[str] = Header(default=None)):
-        """Игра «Ситуации»: state / join / leave / reserve / quit / suggest / svote /
-        chat_send / typing / react / submit / submit_media / contact / vote и админские a_*."""
-        user = _authenticate(x_telegram_init_data)
-        if sit_action is None:
-            raise HTTPException(status_code=404, detail="Игра недоступна")
-        result = await sit_action(user, action, payload or {})
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
-        return JSONResponse(result)
-
+    # ВАЖНО: статический /api/sit/upload обязан стоять ДО шаблона /api/sit/{action}, иначе его перехватит шаблон
     @router.post("/api/sit/upload")
     async def post_sit_upload(request: Request, kind: str, mtype: str, caption: str = "",
                               x_telegram_init_data: Optional[str] = Header(default=None)):
@@ -471,6 +459,19 @@ def build_miniapp_router(
         if len(data) > limit:
             raise HTTPException(status_code=413, detail="Файл слишком большой")
         result = await sit_upload(user, kind, mtype, request.headers.get("content-type", ""), data, caption)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
+        return JSONResponse(result)
+
+    @router.post("/api/sit/{action}")
+    async def post_sit(action: str, payload: dict = Body(default={}),
+                       x_telegram_init_data: Optional[str] = Header(default=None)):
+        """Игра «Ситуации»: state / join / leave / reserve / quit / suggest / svote /
+        chat_send / typing / react / submit / submit_media / contact / vote и админские a_*."""
+        user = _authenticate(x_telegram_init_data)
+        if sit_action is None:
+            raise HTTPException(status_code=404, detail="Игра недоступна")
+        result = await sit_action(user, action, payload or {})
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
         return JSONResponse(result)
