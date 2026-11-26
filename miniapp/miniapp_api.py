@@ -114,6 +114,9 @@ def build_miniapp_router(
     ai_reset: Callable[[dict], Awaitable[None]],
     game_action: Callable[[dict, str, dict], Awaitable[dict]],
     friends_info: Callable[[dict], Awaitable[dict]],
+    sit_action: Optional[Callable[[dict, str, dict], Awaitable[dict]]] = None,
+    sit_media: Optional[Callable[[dict, int], Awaitable[Optional[tuple]]]] = None,
+    sit_avatar_ok: Optional[Callable[[int, int], bool]] = None,
 ) -> APIRouter:
     """Собирает APIRouter с эндпоинтами мини-аппа и админ-функциями."""
 
@@ -238,8 +241,10 @@ def build_miniapp_router(
         )
 
     @router.get("/api/avatar/{user_id}")
-    async def avatar(user_id: int):
-        """Аватарка участника топа. Отдаём только тем, кто в топе-50."""
+    async def avatar(user_id: int, init: Optional[str] = None,
+                     x_telegram_init_data: Optional[str] = Header(default=None)):
+        """Аватарка участника топа-50. Игрокам одной комнаты «Ситуаций» — тоже (нужен ?init=,
+        <img> не умеет слать заголовки)."""
         allowed = set()
         for u in get_top_users(50):
             try:
@@ -247,7 +252,13 @@ def build_miniapp_router(
             except (KeyError, ValueError, TypeError):
                 continue
         if user_id not in allowed:
-            raise HTTPException(status_code=404, detail="not found")
+            raw = x_telegram_init_data or init
+            ok = False
+            if raw and sit_avatar_ok is not None:
+                viewer = _authenticate(raw)
+                ok = bool(sit_avatar_ok(int(viewer["id"]), user_id))
+            if not ok:
+                raise HTTPException(status_code=404, detail="not found")
         return await _avatar_response(user_id)
 
     @router.get("/api/my_avatar")
@@ -430,6 +441,32 @@ def build_miniapp_router(
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
         return JSONResponse(result)
+
+    @router.post("/api/sit/{action}")
+    async def post_sit(action: str, payload: dict = Body(default={}),
+                       x_telegram_init_data: Optional[str] = Header(default=None)):
+        """Игра «Ситуации»: state / join / leave / reserve / quit / suggest / svote /
+        chat_send / typing / react / submit / submit_media / contact / vote и админские a_*."""
+        user = _authenticate(x_telegram_init_data)
+        if sit_action is None:
+            raise HTTPException(status_code=404, detail="Игра недоступна")
+        result = await sit_action(user, action, payload or {})
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Ошибка"))
+        return JSONResponse(result)
+
+    @router.get("/api/sit/media/{tid}")
+    async def get_sit_media(tid: int, init: Optional[str] = None,
+                            x_telegram_init_data: Optional[str] = Header(default=None)):
+        """Файл из ответа команды. <img>/<audio> не умеют слать заголовки — разрешаем ?init=."""
+        user = _authenticate(x_telegram_init_data or init)
+        if sit_media is None:
+            raise HTTPException(status_code=404, detail="not found")
+        res = await sit_media(user, tid)
+        if not res:
+            raise HTTPException(status_code=404, detail="not found")
+        data, mime = res
+        return Response(content=data, media_type=mime, headers={"Cache-Control": "private, max-age=600"})
 
     @router.post("/api/admin/stream_time")
     async def admin_set_stream_time(payload: StreamTimePayload, x_telegram_init_data: Optional[str] = Header(default=None)):
